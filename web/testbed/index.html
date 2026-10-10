@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>lookaround testbed</title>
+  <style>
+    :root {
+      --bg: #0f1216; --panel: rgba(22, 26, 32, 0.92); --text: #e6e9ee; --muted: #8a93a0;
+      --accent: #ff8a3d; --ok: #46c27a; --bad: #e25c5c; --line: #2a313b;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+    canvas { display: block; }
+    #panel { position: absolute; top: 12px; left: 12px; width: 280px; max-width: calc(100vw - 24px);
+      background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+    h1 { font-size: 14px; margin: 0 0 10px; font-weight: 600; letter-spacing: 0.02em; }
+    h1 span { color: var(--muted); font-weight: 400; }
+    label { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 8px; margin: 6px 0; color: var(--muted); }
+    select, input[type=range] { width: 100%; }
+    select { background: #1b2027; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px; }
+    button { background: #1b2027; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-variant-numeric: tabular-nums; }
+    td { padding: 1px 0; }
+    td:last-child { text-align: right; }
+    td.k { color: var(--muted); }
+    .sep td { border-top: 1px solid var(--line); padding-top: 5px; }
+    #status { font-size: 12px; margin-top: 8px; color: var(--muted); }
+    #status.ok::before { content: "● "; color: var(--ok); }
+    #status.bad::before { content: "● "; color: var(--bad); }
+    #help { position: absolute; bottom: 10px; left: 12px; right: 12px; color: var(--muted); font-size: 12px; pointer-events: none; }
+    @media (max-width: 600px) { #panel { width: auto; right: 12px; } #help { display: none; } }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="panel">
+    <h1>lookaround <span>testbed A: animation</span></h1>
+    <label>Preset <select id="preset"></select></label>
+    <label>Ball <select id="path"></select></label>
+    <label>Speed <input id="speed" type="range" min="0" max="3" step="0.05" value="1"></label>
+    <label>Show <span><input id="rays" type="checkbox" checked> gaze line</span></label>
+    <button id="pause">Pause</button>
+    <table id="readout"></table>
+    <div id="status" class="bad">connecting…</div>
+  </div>
+  <div id="help">Drag the ball to move it (hold Shift to move it up and down). Drag elsewhere to orbit the camera, scroll to zoom.</div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

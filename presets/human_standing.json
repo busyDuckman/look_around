@@ -1,0 +1,153 @@
+{
+  "$schema": "../schema/settings.schema.json",
+  "spec_version": "0.1.0",
+  "name": "human_standing",
+  "description": "Standing adult, height 1.75 m (Drillis & Contini ratios). Torso joins past 45 deg and takes about 20% of a 100 deg shift (Sidenmark & Gellersen 2019). Feet turn on the base decision rule (hand-picked thresholds).",
+  "angle_unit": "deg",
+  "base": {
+    "yaw": {
+      "limits": null,
+      "dynamics": {
+        "omega": 3.0,
+        "v_max": 120,
+        "latency": 0.25,
+        "deadband": 3
+      }
+    },
+    "decision": {
+      "turn_now": 100,
+      "dwell_angle": 30,
+      "dwell_time": 1.5,
+      "settle_angle": 5
+    }
+  },
+  "torso": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        0.93
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "yaw": {
+      "limits": [
+        -45,
+        45
+      ],
+      "split": {
+        "pos": {
+          "share": 0.35,
+          "knee": 45,
+          "soft": 8
+        },
+        "neg": {
+          "share": 0.35,
+          "knee": 45,
+          "soft": 8
+        }
+      },
+      "dynamics": {
+        "omega": 3.0,
+        "v_max": 60,
+        "latency": 0.3,
+        "deadband": 3
+      }
+    }
+  },
+  "head": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        0.595
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "yaw": {
+      "limits": [
+        -80,
+        80
+      ],
+      "split": {
+        "pos": {
+          "share": 0.69,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 0.69,
+          "knee": 0,
+          "soft": 0
+        }
+      },
+      "dynamics": {
+        "omega": 5.0,
+        "v_max": 90,
+        "latency": 0.1,
+        "deadband": 2
+      }
+    },
+    "pitch": {
+      "limits": [
+        -35,
+        30
+      ],
+      "rest": -8,
+      "split": {
+        "pos": {
+          "share": 0.52,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 1.0,
+          "knee": 10,
+          "soft": 4
+        }
+      },
+      "dynamics": {
+        "omega": 5.0,
+        "v_max": 90,
+        "latency": 0.1,
+        "deadband": 2
+      }
+    }
+  },
+  "eyes": {
+    "offset": {
+      "xyz": [
+        0.08,
+        0,
+        0.115
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "binocular": false,
+    "ipd": 0.063,
+    "yaw": {
+      "limits": [
+        -35,
+        35
+      ]
+    },
+    "pitch": {
+      "limits": [
+        -35,
+        35
+      ]
+    }
+  }
+}

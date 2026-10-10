@@ -1,0 +1,72 @@
+{
+  "$schema": "../schema/settings.schema.json",
+  "spec_version": "0.1.0",
+  "name": "owl",
+  "description": "Perched owl: eyes fixed in the head (eyes null), so the head does all the work. Head yaw about 270 deg total range. Dynamics hand-picked.",
+  "angle_unit": "deg",
+  "base": null,
+  "torso": null,
+  "head": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        0.3
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "yaw": {
+      "limits": [
+        -135,
+        135
+      ],
+      "split": {
+        "pos": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        }
+      },
+      "dynamics": {
+        "omega": 10.0,
+        "v_max": 300,
+        "latency": 0.05,
+        "deadband": 1
+      }
+    },
+    "pitch": {
+      "limits": [
+        -80,
+        80
+      ],
+      "split": {
+        "pos": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        }
+      },
+      "dynamics": {
+        "omega": 10.0,
+        "v_max": 300,
+        "latency": 0.05,
+        "deadband": 1
+      }
+    }
+  },
+  "eyes": null
+}

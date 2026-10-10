@@ -1,0 +1,91 @@
+{
+  "$schema": "../schema/settings.schema.json",
+  "spec_version": "0.1.0",
+  "name": "head_only",
+  "description": "The idea.md model exactly: eyes and head only, no torso or base, open loop. Used for the idea.md compatibility test. Eye point at the head pivot, head yaw continuous, as in idea.md.",
+  "angle_unit": "deg",
+  "base": null,
+  "torso": null,
+  "head": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        1.6
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "yaw": {
+      "limits": null,
+      "split": {
+        "pos": {
+          "share": 0.69,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 0.69,
+          "knee": 0,
+          "soft": 0
+        }
+      },
+      "dynamics": {
+        "omega": 5.0,
+        "v_max": 90
+      }
+    },
+    "pitch": {
+      "limits": [
+        -35,
+        30
+      ],
+      "rest": -8,
+      "split": {
+        "pos": {
+          "share": 0.52,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 1.0,
+          "knee": 10,
+          "soft": 4
+        }
+      },
+      "dynamics": {
+        "omega": 5.0,
+        "v_max": 90
+      }
+    }
+  },
+  "eyes": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        0
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "yaw": {
+      "limits": [
+        -35,
+        35
+      ]
+    },
+    "pitch": {
+      "limits": [
+        -35,
+        35
+      ]
+    }
+  }
+}

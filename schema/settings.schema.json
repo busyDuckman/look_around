@@ -1,0 +1,459 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lookaround/lookaround/schema/settings.schema.json",
+  "title": "lookaround settings",
+  "description": "Settings document for a lookaround looker. Meaning of each field: docs/sped.md section 4.",
+  "type": "object",
+  "required": [
+    "spec_version",
+    "name"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "spec_version": {
+      "type": "string",
+      "pattern": "^0\\.1\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "angle_unit": {
+      "enum": [
+        "rad",
+        "deg"
+      ],
+      "default": "rad"
+    },
+    "max_substep": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 0.008333333333333333
+    },
+    "velocity_filter_tau": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 0.02
+    },
+    "base": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/base"
+        }
+      ]
+    },
+    "torso": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/torso"
+        }
+      ]
+    },
+    "head": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/head"
+        }
+      ]
+    },
+    "eyes": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/eyes"
+        }
+      ]
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "base"
+      ],
+      "properties": {
+        "base": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "required": [
+        "torso"
+      ],
+      "properties": {
+        "torso": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "required": [
+        "head"
+      ],
+      "properties": {
+        "head": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "required": [
+        "eyes"
+      ],
+      "properties": {
+        "eyes": {
+          "type": "object"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "offset": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "xyz": {
+          "$ref": "#/$defs/vec3",
+          "default": [
+            0,
+            0,
+            0
+          ]
+        },
+        "rpy": {
+          "$ref": "#/$defs/vec3",
+          "default": [
+            0,
+            0,
+            0
+          ]
+        }
+      }
+    },
+    "limits": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "hinge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "share"
+      ],
+      "properties": {
+        "share": {
+          "type": "number",
+          "minimum": 0
+        },
+        "knee": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "soft": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pos",
+        "neg"
+      ],
+      "properties": {
+        "pos": {
+          "$ref": "#/$defs/hinge"
+        },
+        "neg": {
+          "$ref": "#/$defs/hinge"
+        }
+      }
+    },
+    "dynamics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "omega",
+        "v_max"
+      ],
+      "properties": {
+        "omega": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "v_max": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "a_max": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          ],
+          "default": null
+        },
+        "latency": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "deadband": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_lead": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "axis_common": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/limits"
+            }
+          ],
+          "default": null
+        },
+        "rest": {
+          "type": "number",
+          "default": 0
+        },
+        "dynamics": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/dynamics"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "axis_split": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/axis_common"
+        }
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "split": {
+          "$ref": "#/$defs/split"
+        }
+      }
+    },
+    "axis_plain": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/axis_common"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "axis_split_limited": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/axis_split"
+        }
+      ],
+      "required": [
+        "limits"
+      ],
+      "properties": {
+        "limits": {
+          "$ref": "#/$defs/limits"
+        }
+      }
+    },
+    "axis_plain_limited": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/axis_plain"
+        }
+      ],
+      "required": [
+        "limits"
+      ],
+      "properties": {
+        "limits": {
+          "$ref": "#/$defs/limits"
+        }
+      }
+    },
+    "part_common": {
+      "type": "object",
+      "required": [
+        "yaw"
+      ],
+      "properties": {
+        "external": {
+          "type": "boolean",
+          "default": false
+        },
+        "offset": {
+          "$ref": "#/$defs/offset"
+        },
+        "actuator_latency": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "turn_now": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dwell_angle": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dwell_time": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.5
+        },
+        "settle_angle": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "base": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/part_common"
+        }
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "yaw": {
+          "$ref": "#/$defs/axis_plain"
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        }
+      }
+    },
+    "torso": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/part_common"
+        }
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "yaw": {
+          "$ref": "#/$defs/axis_split"
+        }
+      }
+    },
+    "head": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/part_common"
+        }
+      ],
+      "required": [
+        "pitch"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "yaw": {
+          "$ref": "#/$defs/axis_split"
+        },
+        "pitch": {
+          "$ref": "#/$defs/axis_split_limited"
+        }
+      }
+    },
+    "eyes": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/part_common"
+        }
+      ],
+      "required": [
+        "pitch"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "binocular": {
+          "type": "boolean",
+          "default": false
+        },
+        "ipd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.063
+        },
+        "yaw": {
+          "$ref": "#/$defs/axis_plain_limited"
+        },
+        "pitch": {
+          "$ref": "#/$defs/axis_plain_limited"
+        }
+      }
+    }
+  }
+}

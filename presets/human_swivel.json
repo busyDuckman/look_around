@@ -1,0 +1,153 @@
+{
+  "$schema": "../schema/settings.schema.json",
+  "spec_version": "0.1.0",
+  "name": "human_swivel",
+  "description": "Adult in a swivel chair, height 1.75 m. Behaves like standing (Mehrotra et al. 2025) with the chair as the base: no foot-step latency, shorter dwell (hand-picked).",
+  "angle_unit": "deg",
+  "base": {
+    "yaw": {
+      "limits": null,
+      "dynamics": {
+        "omega": 3.0,
+        "v_max": 120,
+        "latency": 0.0,
+        "deadband": 3
+      }
+    },
+    "decision": {
+      "turn_now": 100,
+      "dwell_angle": 30,
+      "dwell_time": 1.0,
+      "settle_angle": 5
+    }
+  },
+  "torso": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        0.5
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "yaw": {
+      "limits": [
+        -45,
+        45
+      ],
+      "split": {
+        "pos": {
+          "share": 0.35,
+          "knee": 45,
+          "soft": 8
+        },
+        "neg": {
+          "share": 0.35,
+          "knee": 45,
+          "soft": 8
+        }
+      },
+      "dynamics": {
+        "omega": 3.0,
+        "v_max": 60,
+        "latency": 0.3,
+        "deadband": 3
+      }
+    }
+  },
+  "head": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        0.585
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "yaw": {
+      "limits": [
+        -80,
+        80
+      ],
+      "split": {
+        "pos": {
+          "share": 0.69,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 0.69,
+          "knee": 0,
+          "soft": 0
+        }
+      },
+      "dynamics": {
+        "omega": 5.0,
+        "v_max": 90,
+        "latency": 0.1,
+        "deadband": 2
+      }
+    },
+    "pitch": {
+      "limits": [
+        -35,
+        30
+      ],
+      "rest": -8,
+      "split": {
+        "pos": {
+          "share": 0.52,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 1.0,
+          "knee": 10,
+          "soft": 4
+        }
+      },
+      "dynamics": {
+        "omega": 5.0,
+        "v_max": 90,
+        "latency": 0.1,
+        "deadband": 2
+      }
+    }
+  },
+  "eyes": {
+    "offset": {
+      "xyz": [
+        0.08,
+        0,
+        0.115
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "binocular": false,
+    "ipd": 0.063,
+    "yaw": {
+      "limits": [
+        -35,
+        35
+      ]
+    },
+    "pitch": {
+      "limits": [
+        -35,
+        35
+      ]
+    }
+  }
+}

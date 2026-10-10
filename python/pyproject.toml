@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lookaround"
+version = "0.1.0.dev0"
+description = "Natural gaze for anything that can look around: eyes, head, torso and base, from one settings file."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: Robot Framework",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "hypothesis>=6", "jsonschema>=4"]
+testbed = ["websockets>=13"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lookaround"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../presets" = "lookaround/presets"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"

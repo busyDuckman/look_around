@@ -1,0 +1,70 @@
+{
+  "$schema": "../schema/settings.schema.json",
+  "spec_version": "0.1.0",
+  "name": "pan_tilt",
+  "description": "Generic pan-tilt camera or robot head without eyes: continuous pan, limited tilt, acceleration limit and reference governor for real servos.",
+  "angle_unit": "deg",
+  "base": null,
+  "torso": null,
+  "head": {
+    "offset": {
+      "xyz": [
+        0,
+        0,
+        0.1
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "actuator_latency": 0.02,
+    "yaw": {
+      "limits": null,
+      "split": {
+        "pos": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        }
+      },
+      "dynamics": {
+        "omega": 8.0,
+        "v_max": 180,
+        "a_max": 720,
+        "max_lead": 15
+      }
+    },
+    "pitch": {
+      "limits": [
+        -30,
+        90
+      ],
+      "split": {
+        "pos": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        },
+        "neg": {
+          "share": 1.0,
+          "knee": 0,
+          "soft": 0
+        }
+      },
+      "dynamics": {
+        "omega": 8.0,
+        "v_max": 180,
+        "a_max": 720,
+        "max_lead": 15
+      }
+    }
+  },
+  "eyes": null
+}
