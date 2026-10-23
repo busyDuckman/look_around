@@ -1,24 +1,37 @@
 # lookaround
 
-A library for generating natural looking motion for anything that can look around (people, robots, animals).
+A library for generating natural-looking motion for anything that can look around (people, robots, animals).
 
-The goal is a really simple and intuitive control interface, a .json that defines the constraints of the system, a powerful backend based on existing research that does the rest.
+The goal is a really simple and intuitive control interface, a .json that defines the system (constraints, speeds, etc.), a powerful backend based on existing research that does the rest. The system is a type of augmented control, allowing a thing to look at a target while performing other tasks.
 
-Its us suitable for both animation and control systems (PID loop).
+It's suitable for both animation and control systems (PID loop).
+
+# The Model
+
+A cascading set of transforms work together to direct gaze. The model can be any/all of the following:
+
+  - eyes: move to point directly at the target
+  - head: is involved if the eyes can't get there comfortably
+  - torso[n]: yaw adjustments, achieved by body movement, if the head can't get there comfortably.
+  - heading: yaw adjustment of the character/robot (i.e. "please turn to face")
+
+The model is opinionated in that pitch adjustments are only done via the eyes and head.
+Every part of the kinematic chain beneath that is given a yaw (heading) only.
+
+The library takes feedback, so if other things are going on and another event is driving part of the robot/animation-rig then the rest of the system will compensate. Also parts of the system can be set to an 'external' mode, so that the look-at controller will respond naturally to other movement in the animation-rig/robot.
+
+This setup is sufficient for natural-looking movement across a great many systems: people, dogs, snakes, owls, assorted robots. It will also respond to constraints, such as a person being seated.
+
+
 
 ## The interface
 
-This library understands and can cornell any of:
-  - eyes
-  - head
-  - upper torso (i.e. twisting through the core).
-  - base orientation
 
-The setup files specifies if these things exist, what their range of movement is, and if its something the library controls or reacts to.
+The setup file specifies if these things exist, what their range of movement is, and if it's something the library controls or reacts to.
 
 
 
-## The setting file
+## The settings file
 
 
 You describe the looker in a settings file: which parts it has (eyes, head, torso, base) and their limits. Each tick you give it a target point and, optionally, the measured pose of its joints. It returns setpoints for the joints it drives. The eyes take small shifts, the head takes a share, the torso joins on large shifts, and the base turns when the target stays far off to the side. Shares and limits come from published eye-head-torso studies.
@@ -27,11 +40,13 @@ lookaround does not do motor control. Its setpoints feed your own PID loops, ser
 
 Status: early development. The spec and the Python reference implementation exist; C++, Rust, C# and TypeScript ports are planned.
 
+
+
 ## Example
 
 ```python
 
-# in this example a robot  sits in a chair and looks around
+# in this example a robot sits in a chair and looks around
 
 
 import lookaround as la
