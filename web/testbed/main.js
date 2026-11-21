@@ -97,7 +97,7 @@ function box(parent, size, pos, material = mat.chair) {
 
 // ---- mannequin built from the settings document ------------------------------------------------
 
-let body = null;   // { root, groups: {base, torso, head}, eyes: {left, right}, eyePoint, settings }
+let body = null;   // { root, torso: [group...], head, eyes: {left, right}, eyePoint, settings }
 const EYE_R = 0.022;   // drawn eyeball radius (m)
 
 function offsetOf(part) {
@@ -105,74 +105,90 @@ function offsetOf(part) {
   return o.xyz || [0, 0, 0];
 }
 
+// Builds the mannequin as the same chain the spec uses: root (world position + heading) ->
+// torso segments -> head -> eyes. Each group is placed at its settings offset.
 function buildBody(settings) {
   if (body) world.remove(body.root);
   const root = new THREE.Group();
   world.add(root);
-  const groups = {};
-  let parent = root;
 
-  const torsoZ = settings.torso ? offsetOf(settings.torso)[2] : 0.9;
-  const headZ = settings.head ? offsetOf(settings.head)[2] : 0.6;
-  const seated = torsoZ < 0.7;
-  const swivel = seated && !!settings.base;
+  const segs = settings.torso || [];
+  let zAcc = 0;
+  const segZ = segs.map((s) => (zAcc += offsetOf(s)[2]));         // pivot heights above the root
+  const headZ = zAcc + offsetOf(settings.head)[2];
+  const hasPelvis = segs.length > 0 && segs[0].name === 'pelvis';
+  const hipZ = hasPelvis ? segZ[0] : (segs.length ? segZ[0] - 0.25 : headZ - 0.6);
+  const seated = hipZ < 0.7;
+  const swivel = seated && !!settings.heading;
 
-  // base: legs (standing) or chair + legs (seated); turns with the base yaw
-  const base = new THREE.Group();
-  base.position.set(...offsetOf(settings.base));
-  parent.add(base);
-  if (settings.base) groups.base = base;
-  parent = base;
+  // legs (standing) or chair + legs (seated): on the root, so they turn with the heading
   if (!seated) {
     for (const y of [0.1, -0.1]) {
-      limb(base, [0, y, 0.08], [0, y, torsoZ - 0.05], 0.06);
-      box(base, [0.24, 0.09, 0.06], [0.06, y, 0.03], mat.dark);
+      limb(root, [0, y, 0.08], [0, y, hipZ - 0.05], 0.06);
+      box(root, [0.24, 0.09, 0.06], [0.06, y, 0.03], mat.dark);
     }
   } else {
-    const seatTop = torsoZ - 0.08;
-    box(base, [0.46, 0.46, 0.05], [0.05, 0, seatTop - 0.025]);
-    box(base, [0.05, 0.44, 0.5], [-0.2, 0, seatTop + 0.25]);
+    const seatTop = hipZ - 0.08;
+    box(root, [0.46, 0.46, 0.05], [0.05, 0, seatTop - 0.025]);
+    box(root, [0.05, 0.44, 0.5], [-0.2, 0, seatTop + 0.25]);
     if (swivel) {
-      limb(base, [0, 0, 0.06], [0, 0, seatTop - 0.05], 0.025, mat.joint);
+      limb(root, [0, 0, 0.06], [0, 0, seatTop - 0.05], 0.025, mat.joint);
       for (let i = 0; i < 5; i++) {
         const a = (i / 5) * Math.PI * 2;
-        limb(base, [0, 0, 0.05], [0.3 * Math.cos(a), 0.3 * Math.sin(a), 0.04], 0.018, mat.joint);
+        limb(root, [0, 0, 0.05], [0.3 * Math.cos(a), 0.3 * Math.sin(a), 0.04], 0.018, mat.joint);
       }
     } else {
       for (const [x, y] of [[0.24, 0.2], [0.24, -0.2], [-0.18, 0.2], [-0.18, -0.2]]) {
-        limb(base, [x, y, 0.02], [x, y, seatTop - 0.05], 0.015, mat.joint);
+        limb(root, [x, y, 0.02], [x, y, seatTop - 0.05], 0.015, mat.joint);
       }
     }
     for (const y of [0.1, -0.1]) {
-      limb(base, [0, y, torsoZ - 0.02], [0.42, y, torsoZ - 0.02], 0.065);
-      limb(base, [0.42, y, torsoZ - 0.02], [0.44, y, 0.08], 0.055);
-      box(base, [0.24, 0.09, 0.06], [0.5, y, 0.03], mat.dark);
+      limb(root, [0, y, hipZ - 0.02], [0.42, y, hipZ - 0.02], 0.065);
+      limb(root, [0.42, y, hipZ - 0.02], [0.44, y, 0.08], 0.055);
+      box(root, [0.24, 0.09, 0.06], [0.5, y, 0.03], mat.dark);
     }
   }
 
-  // torso: pelvis to shoulders, arms, neck
-  if (settings.torso) {
-    const torso = new THREE.Group();
-    torso.position.set(...offsetOf(settings.torso));
-    parent.add(torso);
-    groups.torso = torso;
-    parent = torso;
-    const top = headZ - 0.12;
-    const chest = limb(torso, [0, 0, 0.1], [0, 0, top - 0.1], 0.12);
-    chest.scale.set(0.75, 1, 1.45);   // capsule axis is local y after the quaternion; widen sideways
-    limb(torso, [0, 0.19, top - 0.04], [0, -0.19, top - 0.04], 0.06);
-    for (const y of [0.22, -0.22]) {
-      limb(torso, [0, y, top - 0.05], [0.03, y * 1.08, top - 0.35], 0.045);
-      limb(torso, [0.03, y * 1.08, top - 0.35], seated ? [0.3, y * 0.9, top - 0.45] : [0.05, y * 1.08, top - 0.62], 0.04);
-    }
-    limb(torso, [0, 0, top - 0.04], [0, 0, headZ + 0.01], 0.045, mat.joint);
+  // torso segments, chained
+  const torso = [];
+  let parent = root;
+  segs.forEach((s) => {
+    const g = new THREE.Group();
+    g.position.set(...offsetOf(s));
+    parent.add(g);
+    torso.push(g);
+    parent = g;
+  });
+
+  // hips: on the pelvis segment if there is one, otherwise fixed on the root
+  const hipGroup = hasPelvis ? torso[0] : root;
+  const hipBase = hasPelvis ? segZ[0] : 0;
+  const hips = limb(hipGroup, [0, 0.11, hipZ - hipBase + 0.02], [0, -0.11, hipZ - hipBase + 0.02], 0.08);
+  hips.scale.set(1, 1, 0.9);
+  const lastIndex = segs.length - 1;
+  const chestGroup = lastIndex >= 0 && !(hasPelvis && segs.length === 1) ? torso[lastIndex] : hipGroup;
+  const chestBase = chestGroup === root ? 0 : segZ[torso.indexOf(chestGroup)];
+  if (hasPelvis && chestGroup !== torso[0]) {
+    limb(torso[0], [0, 0, 0.06], [0, 0, segZ[1] - segZ[0]], 0.08, mat.joint);   // lower spine
   }
+
+  // chest, shoulders, arms, neck: on the outermost torso segment
+  const rel = (z) => z - chestBase;
+  const top = headZ - 0.12;
+  const chest = limb(chestGroup, [0, 0, rel(Math.max(hipZ + 0.22, chestBase + 0.04))], [0, 0, rel(top - 0.1)], 0.12);
+  chest.scale.set(0.75, 1, 1.45);   // capsule axis is local y after the quaternion; widen sideways
+  limb(chestGroup, [0, 0.19, rel(top - 0.04)], [0, -0.19, rel(top - 0.04)], 0.06);
+  for (const y of [0.22, -0.22]) {
+    limb(chestGroup, [0, y, rel(top - 0.05)], [0.03, y * 1.08, rel(top - 0.35)], 0.045);
+    limb(chestGroup, [0.03, y * 1.08, rel(top - 0.35)],
+      seated ? [0.3, y * 0.9, rel(top - 0.45)] : [0.05, y * 1.08, rel(top - 0.62)], 0.04);
+  }
+  limb(chestGroup, [0, 0, rel(top - 0.04)], [0, 0, rel(headZ + 0.01)], 0.045, mat.joint);
 
   // head: rotates about the neck pivot; face points +x
   const head = new THREE.Group();
   head.position.set(...offsetOf(settings.head));
   parent.add(head);
-  groups.head = head;
   const skull = mesh(new THREE.SphereGeometry(1, 40, 28), mat.body, head, [0, 0, 0.1]);
   skull.scale.set(0.085, 0.075, 0.11);
   const nose = mesh(new THREE.ConeGeometry(0.014, 0.035, 12), mat.body, head, [0.09, 0, 0.075]);
@@ -201,19 +217,21 @@ function buildBody(settings) {
     eyes[side] = g;
   }
 
-  body = { root, groups, eyes, eyePoint, settings };
+  body = { root, torso, head, eyes, eyePoint, settings };
 }
 
 function setYawPitch(obj, yaw = 0, pitch = 0) {
-  obj.rotation.set(0, -pitch, yaw, 'ZYX');   // Rz(yaw) Ry(-pitch), spec 3.4
+  obj.rotation.set(0, -pitch, yaw, 'ZYX');   // Rz(yaw) Ry(-pitch), spec 3.5
 }
 
-function applyPose(pose) {
+function applyPose(frame) {
   if (!body) return;
-  const g = body.groups;
-  if (g.base) setYawPitch(g.base, pose['base.yaw']);
-  if (g.torso) setYawPitch(g.torso, pose['torso.yaw']);
-  if (g.head) setYawPitch(g.head, pose['head.yaw'], pose['head.pitch']);
+  const pose = frame.pose;
+  const root = frame.root || { position: [0, 0, 0], heading: 0 };
+  body.root.position.set(...root.position);
+  setYawPitch(body.root, root.heading);
+  body.torso.forEach((g, i) => setYawPitch(g, pose[`torso.${i}.yaw`] || 0));
+  setYawPitch(body.head, pose['head.yaw'] || 0, pose['head.pitch'] || 0);
   const bino = body.settings.eyes && body.settings.eyes.binocular;
   for (const side of ['left', 'right']) {
     const p = bino ? `eyes.${side}.` : 'eyes.';
@@ -316,7 +334,7 @@ function renderReadout(frame) {
   const d = frame.diagnostics;
   rows.push(`<tr class="sep"><td class="k">gaze error</td><td>${fmt(d.gaze_error)}</td></tr>`);
   rows.push(`<tr><td class="k">reachable</td><td>${d.reachable ? 'yes' : 'no'}</td></tr>`);
-  if (d.base_state) rows.push(`<tr><td class="k">base</td><td>${d.base_state}</td></tr>`);
+  if (d.heading_state) rows.push(`<tr><td class="k">heading</td><td>${d.heading_state}</td></tr>`);
   if (d.vergence != null) rows.push(`<tr><td class="k">vergence</td><td>${fmt(d.vergence)}</td></tr>`);
   ui.readout.innerHTML = rows.join('');
 }
@@ -370,7 +388,7 @@ const ballWorld = new THREE.Vector3();
 function animate(now) {
   requestAnimationFrame(animate);
   if (latest) {
-    applyPose(latest.pose);
+    applyPose(latest);
     const t = latest.target;
     ball.visible = ballShadowHint.visible = !!t;
     if (t && !dragging) ball.position.set(t[0], t[1], t[2]);

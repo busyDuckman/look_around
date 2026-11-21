@@ -1,0 +1,93 @@
+# Standing adult, height 1.75 m.
+# Sources are summarised in .plans/research_notes.md. Values marked "hand-picked" were chosen by
+# eye and still need checking in the testbed.
+
+spec_version: "0.2.0"
+name: human_standing
+description: Standing adult. Eyes take small shifts, head joins past 12 deg, pelvis and chest join on large shifts, feet turn when the target stays off to the side.
+angle_unit: deg
+
+# Whole-body yaw: turning on the feet. Setpoints are world headings.
+heading:
+  yaw:
+    limits: null                 # continuous
+    dynamics:
+      omega: 3.0                 # hand-picked
+      v_max: 120                 # deg/s, hand-picked
+      latency: 0.25              # feet start ~250 ms after the torso (Pejsa 2015, after Hollands et al. 2004)
+      deadband: 3
+  decision:                      # no paper gives a rule for when to turn the feet: all hand-picked
+    turn_now: 100                # beyond what head + torso + eyes reach comfortably: turn at once
+    dwell_angle: 30              # target held more than 30 deg off the heading...
+    dwell_time: 1.5              # ...for 1.5 s: turn to face it
+    settle_angle: 5
+
+# Torso: yaw only, from the root outwards.
+# Sidenmark & Gellersen 2019: no torso movement below ~45 deg; standing, the torso covers up to
+# ~20% of a 100 deg shift. Pejsa 2015: when standing, the pelvis takes about half the torso turn.
+# Pelvis 0.18 and chest 0.20 beyond 45 deg give ~10 + ~9 deg at a 100 deg shift.
+torso:
+  - name: pelvis
+    offset: { xyz: [0, 0, 0.93] }      # hip height 0.530 H (Drillis & Contini 1966)
+    yaw:
+      limits: [-25, 25]                # hand-picked
+      split:
+        pos: { share: 0.18, dead_zone: 45, softness: 8 }
+        neg: { share: 0.18, dead_zone: 45, softness: 8 }
+      dynamics:
+        omega: 3.0
+        v_max: 60
+        latency: 0.3                   # torso starts ~300 ms after the head (Sidenmark & Gellersen 2019)
+        deadband: 3
+  - name: chest
+    offset: { xyz: [0, 0, 0.25] }      # lower thoracic spine, above the pelvis (approximate)
+    yaw:
+      limits: [-30, 30]                # thoracic axial rotation, hand-picked
+      split:
+        pos: { share: 0.20, dead_zone: 45, softness: 8 }
+        neg: { share: 0.20, dead_zone: 45, softness: 8 }
+      dynamics:
+        omega: 3.0
+        v_max: 60
+        latency: 0.3
+        deadband: 3
+
+head:
+  offset: { xyz: [0, 0, 0.345] }       # neck pivot at chin height 0.870 H (Drillis & Contini 1966)
+  yaw:
+    limits: [-80, 80]                  # neck axial rotation
+    split:
+      # Kim, Reed & Martin 2010: the head takes 69% of the azimuth. Sidenmark & Gellersen 2019:
+      # shifts of 15 deg or less are generally eyes only. Dead zone 12 deg with 3 deg softness, so
+      # the head fades in between about 12 and 15 deg.
+      pos: { share: 0.69, dead_zone: 12, softness: 3 }
+      neg: { share: 0.69, dead_zone: 12, softness: 3 }
+    dynamics:
+      omega: 5.0                       # idea.md: settles to 95% in ~0.95 s
+      v_max: 90                        # deg/s, idea.md
+      latency: 0.1                     # head starts 30-150 ms after the eyes (Sidenmark & Gellersen 2019)
+      deadband: 2
+  pitch:
+    limits: [-35, 30]                  # neck flexion / extension (idea.md)
+    rest: -8                           # looking forward, slightly down (idea.md)
+    split:
+      # Up: Kim et al. 2010, head takes 52%; eyes-only zone as for yaw (Sidenmark & Gellersen 2019).
+      pos: { share: 0.52, dead_zone: 12, softness: 3 }
+      # Down: eyes alone for the first 10 deg below rest, then the head takes all of the rest
+      # (Hu et al. CHI 2026; Fang et al. 2015; Mehrotra et al. 2025; Stahl 1999). Kim's 8% for
+      # downward glances is not used: too little for someone looking at something low for long.
+      neg: { share: 1.0, dead_zone: 10, softness: 4 }
+    dynamics:
+      omega: 5.0
+      v_max: 90
+      latency: 0.1
+      deadband: 2
+
+eyes:
+  offset: { xyz: [0.08, 0, 0.115] }    # eye height 0.936 H (Drillis & Contini 1966), forward of the neck
+  binocular: false                     # true: left and right eyes converge on near targets
+  ipd: 0.063                           # m, adult average
+  yaw:
+    limits: [-35, 35]                  # comfortable eye range ~35 deg (idea.md; Stahl 1999)
+  pitch:
+    limits: [-35, 35]

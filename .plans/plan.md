@@ -9,7 +9,7 @@ Status: draft 2 (2026-10-09). Done: the spec (docs/SPEC.md), schema and presets;
 The idea.md model covers eyes and head. This project adds:
 
 - Upper-body swivel (torso yaw).
-- Whole-body re-orientation (base yaw: a person turning on their feet, or a robot base rotating).
+- Whole-body re-orientation (heading: a person turning on their feet, or a robot base rotating).
 
 Any part can be missing, limited, unlimited, driven by lookaround, or driven by something else.
 
@@ -17,7 +17,7 @@ Python is the reference implementation. C++ (header-only), Rust, C# and TypeScri
 
 Deliverables, in order of importance:
 
-1. A language-neutral spec (`docs/spec.md`), a JSON Schema and shared settings presets. Drafted 2026-10-09 as spec 0.1.0-draft.
+1. A language-neutral spec (`docs/spec.md`), a JSON Schema and shared YAML settings presets. Spec 0.2.0-draft (2026-10-23).
 2. The Python reference library.
 3. Two testbeds: an animation testbed (open loop: a person looking at a moving ball, a head on its own tracking a ball in front of it) and a robot simulation (closed loop: simulated actuators with PID, lag and disturbances).
 4. A conformance suite (golden traces) that every port must pass.
@@ -31,70 +31,64 @@ Deliverables, in order of importance:
 | # | Topic | Decision |
 |---|---|---|
 | D1 | Units | Radians and SI units in the API and all ports, with ROS REP 103 axes (x forward, y left, z up). Degree helpers are provided; docs and tables stay in degrees for readability. |
-| D2 | Torso and base axes | Yaw only (turning). No torso lean. The data types leave room for pitch and roll later. |
-| D3 | Settings | One JSON file. Each part (`eyes`, `head`, `torso`, `base`) is either `null` (absent) or a params object, with `"external": true` for parts driven by something else (default false). See A1. |
+| D2 | Axes | Pitch only in the head and eyes. The heading and every torso segment are yaw only. |
+| D3 | Settings | One YAML file per looker, so sources and the user's own notes sit as comments next to each value (JSON also loads). `heading`, `head` and `eyes` are a params object or `null`; `torso` is a list of segments. `external: true` marks a part driven by something else (default false). Every tunable value (dead zones, shares, limits, speeds) lives in the file. |
 | D4 | Hardware | Yes: the user's own robot head, in a later phase. Hence acceleration limits, velocity feed-forward in the outputs, closed-loop design, and ROS 2 / ros2_control. |
 | D5 | Eyes | A `binocular` boolean in the eyes settings (with `ipd`). False gives one cyclopean gaze; true gives a left and right eye that converge on near targets. |
 | D6 | Licence | MIT OR Apache-2.0 (dual). This is the Rust convention and works on PyPI, npm and NuGet too. |
 | D7 | Names | Checked 2026-10-09: `lookaround` is free on PyPI, npm and NuGet. On crates.io it is taken (an unrelated LAN address tool, v0.1.7). The Rust crate will be `lookaround-gaze` (imported as `lookaround_gaze`); everything else is `lookaround`. Publish real early versions rather than placeholders. |
-| D8 | Target input | A point relative to the system (in the base frame), not a world point. The application (or tf2 in ROS) does the world-to-base transform. |
+| D8 | Frames | One world frame (game world, ROS `map`/`odom`) for the target. The looker's root (ground point + heading, like a game root bone or ROS `base_footprint`) is given with `set_root`. lookaround does the transform internally. See spec section 3 and the frames diagram. |
 | D9 | ROS | ROS 2 is a planned phase, not optional. |
 | D10 | Platform | The testbed runs natively on Windows (MuJoCo, Rerun). ROS 2 runs in WSL2 with Ubuntu 24.04. |
+| D11 | Dead zones | Each part's share of the gaze has a dead zone (the range where it takes none), set per side in the settings. Human head: 12° sideways and up (Sidenmark & Gellersen 2019: shifts ≤15° are generally eyes only), 10° down. Never called a "knee". |
+| D12 | Torso chain | `torso` is a list of yaw-only segments. Standing humans use pelvis + chest (Pejsa 2015: the pelvis takes about half); seated, the chair holds the pelvis, so chest only. |
+| D13 | API | `set_root(position, heading)`, `feedback({joint: angle})`, `update(dt, target_world)`, `reachable(target)`. Joint keys: `heading.yaw`, `torso.<i>.yaw`, `head.yaw`, `head.pitch`, `eyes.yaw`, `eyes.pitch`. |
 
 ---
 
 ## Design
 
-### A1. Settings: params or `null` per part, three states
+### A1. Settings and part states
 
-```json
-{
-  "name": "human_standing",
-  "eyes":  { "binocular": false, "ipd": 0.063,
-             "yaw_limit": 0.61, "pitch_limit": [-0.61, 0.61], "...": "..." },
-  "head":  { "offset": { "xyz": [0, 0, 0.11], "rpy": [0, 0, 0] },
-             "yaw": { "limit": [-1.4, 1.4], "share": 0.69 }, "pitch": { "...": "..." },
-             "dynamics": { "omega": 5.0, "v_max": 1.57, "a_max": 12.0, "latency": 0.0 } },
-  "torso": { "yaw": { "limit": [-0.79, 0.79], "knee": 0.79, "share": 0.35 }, "...": "..." },
-  "base":  { "external": true }
-}
-```
+The settings file is YAML; see `presets/human_standing.yaml` for a full example with sources as comments. The schema is `schema/settings.schema.json`; the meaning of every field is in spec section 4.
 
 | State | Meaning | lookaround reads | lookaround outputs |
 |---|---|---|---|
-| `null` | The part doesn't exist and is fixed at its rest pose. | nothing | nothing |
+| absent | The part doesn't exist. | nothing | nothing |
 | params, `external: false` (default) | lookaround plans this part's motion. | its measured angle (and velocity, if known) | a setpoint: position, velocity feed-forward, acceleration |
 | params, `external: true` | Something else moves this part: a seated person's chair, a nav stack's base, a balance controller. | its measured angle | nothing |
 
 There is no "please turn the body" request. An external part is just another input.
 
-### A2. The control loop: report the pose, query the setpoints
+### A2. The control loop
 
 ```python
 import lookaround as la
 
-looker = la.Looker.from_file("presets/human_standing.json")   # or from_dict(...)
+looker = la.Looker.from_preset("human_standing")      # or Looker.from_file("my_robot.yaml")
 
 while running:
-    looker.report(measured)                  # measured joint angles (+ velocities) of every non-null part
-    sp = looker.update(dt, target=ball_in_base_frame)   # target=None -> idle
-    for joint, s in sp.items():              # only internal parts appear here
-        pid[joint].setpoint(s.position, s.velocity)     # the app's PID / servo / animation
+    looker.set_root(position, heading)                 # where it stands in the world
+    looker.feedback({"torso.0.yaw": 0.2})              # measured joints (closed loop), optional
+    out = looker.update(dt, ball_world)                # target: a world point, or None for idle
+    for joint, sp in out.setpoints.items():            # only internal parts appear here
+        pid[joint].setpoint(sp.position, sp.velocity)  # the app's PID / servo / animation
 ```
 
 - Closed loop (robots). lookaround never assumes its setpoints were reached. Every target is computed from the measured pose.
-- Open loop (animation, conformance tests). If nothing is reported, the measured pose is taken to be lookaround's own last setpoint. This is the same code path with perfect actuators.
+- Open loop (animation, conformance tests). If nothing is fed back, the measured pose is taken to be lookaround's own last setpoint. This is the same code path with perfect actuators.
 - The PID is not in lookaround. It lives in the application: ros2_control, MuJoCo actuators, servo firmware or the game engine. lookaround supplies smooth, limited reference trajectories with feed-forward.
+- `looker.reachable(target)` answers whether a target can be looked at from the current stance without turning; `out.diagnostics` carries gaze error, reachable, lead and the heading state.
 
 ### A3. Compensation falls out of the cascade
 
-Each part's target is worked out relative to its parent's measured angle, from the base out to the eyes:
+Each part's target is worked out relative to its parent's measured angle, from the root out to the eyes:
 
 ```
-target relative to base            -> base reference   (internal only; hysteresis + dwell, see A6)
-target relative to measured torso  -> torso reference  (softplus hinge: joins only for large shifts)
-target relative to measured head   -> head reference   (idea.md head_share: 0.69 yaw, 0.52 up, hinge down)
-target relative to measured head   -> eyes = remainder, clamped
+target bearing in the world                  -> heading reference  (internal only; hysteresis + dwell, see A6)
+target relative to measured parent segment   -> torso[i] reference (dead zone 45°: joins only for large shifts)
+target relative to measured last segment     -> head reference     (dead zone 12°, then 69% yaw / 52% up; down: 10°, then all)
+target relative to measured head             -> eyes = remainder, clamped
 ```
 
 So if a part doesn't get where it was asked to go, the parts further out make up the difference automatically. That covers an external part, a slow or lagging actuator, a part held back by a balance controller with other priorities, or a part sitting on a joint limit. This is the vestibulo-ocular reflex (eyes counter-rotate as the head moves) and the vestibulo-collic reflex (the neck compensates for the trunk; Land 2004) as a single mechanism, and the same idea as idea.md's "eyes = gaze − current head", applied all the way down the chain.
@@ -115,28 +109,30 @@ Testbed B has to show all three working (scenarios B2 and B3).
 
 - Human presets can be generated from height using standard anthropometric ratios (Drillis & Contini 1966: eye ≈ 0.936 H, shoulder ≈ 0.818 H, hip ≈ 0.530 H), via a helper rather than as part of the core.
 - A URDF importer (ROS phase) fills in the offsets from the robot description, so the robot head never needs hand-entered geometry.
-- The target is a point in the base frame (D8). In ROS, tf2 supplies it directly with `lookupTransform(base_link, ball)`.
+- The target is a world point (D8). In ROS, the node looks up `base_footprint` in the target's frame with tf2 and passes it to `set_root`.
 
-### A6. Base: a decision, not a share (internal base only)
+### A6. Heading: a decision, not a share (internal heading only)
 
 People don't turn their feet for a glance. Turns go eyes → head → upper body → feet (Hollands et al. 2004; Anastasopoulos et al. 2015), with the feet about 250 ms after the torso (Pejsa 2015). Rule, with hand-picked values (no paper gives one; see research_notes.md):
 
 - If the target is beyond what head + torso + eyes can reach comfortably (about 100°), turn now.
-- Otherwise, if the target has stayed more than about 30° off the base heading for longer than about 1.5 s, turn to face it.
+- Otherwise, if the target has stayed more than about 30° off the heading for longer than about 1.5 s, turn to face it.
 - Turn with a slower spring, and let the cascade re-centre the torso, head and eyes.
 
-Because the target is given relative to the base, the base setpoint is a yaw relative to the current heading, plus a yaw rate.
+Heading setpoints are world headings. The measured heading comes back through `set_root(heading=...)`.
 
-### A7. Human yaw allocation (v1 presets)
+### A7. Human allocation (presets)
 
 | Part | Joins when | Share | Hard limit | Source |
 |---|---|---|---|---|
-| Eyes | always | remainder | ±35° (preferred ±~20°) | idea.md; Stahl 1999; Sidenmark 2019 |
-| Head | always | 0.69 | ±80° | Kim et al. 2010; Sidenmark 2019 (customary head range) |
-| Torso (standing) | gaze relative to torso > 45° (soft knee) | ≈0.35 beyond the knee, which gives ≈20° at 100° | ±45° | Sidenmark & Gellersen 2019; Pejsa 2015 |
-| Torso (seated) | only at the largest amplitudes | small | ±10° | Mehrotra 2025 |
-| Torso (swivel chair) | like standing | like standing | wide | Mehrotra 2025 |
-| Base | see A6 | rotates to face | none (wraps) | hand-picked |
+| Eyes | always | remainder | ±35° | idea.md; Stahl 1999 |
+| Head yaw | past a 12° dead zone | 0.69 | ±80° | Kim et al. 2010; Sidenmark & Gellersen 2019 |
+| Head pitch | up: past 12°; down: past 10° | up 0.52; down all | −35° / +30° | Kim et al. 2010; Hu et al. 2026; Fang 2015 |
+| Pelvis (standing) | past 45° | 0.18 | ±25° | Sidenmark & Gellersen 2019; Pejsa 2015 |
+| Chest (standing) | past 45° | 0.20 | ±30° | same; pelvis + chest ≈ 20% of a 100° shift |
+| Chest (seated) | past 45° | 0.15 | ±10° | Mehrotra 2025 |
+| Chest (swivel chair) | past 45° | 0.35 | ±40° | Mehrotra 2025 |
+| Heading | see A6 | rotates to face | none (wraps) | hand-picked |
 
 ### A8. Onset latency and dynamics
 
@@ -148,13 +144,13 @@ Because the target is given relative to the base, the base setpoint is a yaw rel
 
 ### A9. Core shape
 
-- Pure and tiny: no dependencies, no allocation in `update`, no I/O. Effectively `(state, settings, measured, target, dt) -> (state, setpoints, diagnostics)`.
+- Small: the core needs no dependencies, does no I/O in `update`, and is effectively `(state, settings, root, measured, target, dt) -> (state, setpoints, diagnostics)`. Only settings loading needs a YAML parser (PyYAML in Python; each port uses its language's usual one).
 - Diagnostics (read-only, no requests): gaze error, a `reachable` flag, per-part reference-minus-measured.
 - Backward-compatibility anchor: a head-only open-loop configuration must reproduce idea.md's `head_share` / `HeadSpring` outputs. That's the first golden test.
 
 ### A10. Frames
 
-- Chain: `base(yaw) -> torso(yaw) -> head(yaw, pitch) -> eyes(yaw, pitch)[x2 if binocular]`. Each angle is relative to its parent; offsets come from A5.
+- Chain: `world -> root(position, heading) -> torso[0..n](yaw) -> head(yaw, pitch) -> eyes(yaw, pitch)[x2 if binocular]`. Each angle is relative to its parent; offsets come from A5.
 - yaw: + is left (counter-clockwise from above), wraps at ±π for continuous joints. pitch: + is up.
 - Rest pose: everything at 0 except head pitch, REST_PITCH = −8°.
 
@@ -177,14 +173,14 @@ Testbed A and the live web demo are the same 3D scene, built once in the browser
 | # | Scene | What it exercises |
 |---|---|---|
 | A1 | Head only, ball in front: Lissajous path, then random jumps | split, spring, eye remainder, saccades (spec 0.2), parallax, vergence |
-| A2 | Standing person, ball orbits 360° at varying heights (floor to overhead) | torso recruitment, base dwell and turn, down-hinge |
+| A2 | Standing person, ball orbits 360° at varying heights (floor to overhead) | torso recruitment, heading dwell and turn, downward dead zone |
 | A3 | Bouncing ball (scripted ballistic path with bounces) passing around and behind the person | fast targets, reachability |
 | A4 | Side by side: standing, seated, swivel and owl all watching the same ball | the generality pitch; main demo video |
 | A5 | Ball teleports at random amplitudes, 1000 trials | science plots |
 
 Ready-made pieces for testbed A (no need to build a character):
 
-- VRM avatars loaded with three-vrm (pixiv). VRM fixes a humanoid skeleton including `hips`, `spine`, `chest`, `upperChest`, `neck`, `head`, `leftEye` and `rightEye`, so the hookup is a bone mapping. Base yaw goes on the root (or `hips`). Torso yaw is spread over `hips`, `spine` and `chest` (Pejsa: the pelvis takes about half when standing). Head yaw and pitch are spread over `neck` and `head`. Eyes go on `leftEye` and `rightEye`. three-vrm's own `vrm.lookAt` is switched off. Any VRM file works, so visitors can drop in their own avatar.
+- VRM avatars loaded with three-vrm (pixiv). VRM fixes a humanoid skeleton including `hips`, `spine`, `chest`, `upperChest`, `neck`, `head`, `leftEye` and `rightEye`, so the hookup is a bone mapping. The heading goes on the root. Torso segments map to `hips` (pelvis) and `spine`/`chest`. Head yaw and pitch are spread over `neck` and `head`. Eyes go on `leftEye` and `rightEye`. three-vrm's own `vrm.lookAt` is switched off. Any VRM file works, so visitors can drop in their own avatar.
 - Characters (the first option listed is the recommendation): the stylised capsule mannequin built in three.js (no assets, engineered look); a realistic human from MakeHuman / MPFB (exports are CC0; check that the rig has eye bones), exported as glTF or converted to VRM; VRoid Studio / VRoid Hub avatars (free, ready-made, but anime-styled). SMPL-X has eye joints but a non-commercial licence, so it is ruled out for a public demo.
 - UI: Tweakpane for sliders bound to the settings, uPlot for live charts (see "Live web demo").
 
@@ -210,7 +206,7 @@ Question: does it work on hardware? Simulated actuators with PID loops, lag, sat
 Ready-made pieces for testbed B:
 
 - The MuJoCo interactive viewer (`mujoco.viewer`): drag bodies such as the ball with the mouse; the controller hooks in through a passive-viewer loop.
-- Reachy Mini (Pollen Robotics / Hugging Face): an open-source desktop robot with a head and a rotating body (base yaw + head, a direct match for our chain). It ships a MuJoCo simulation (`reachy-mini-daemon --sim`) and a Python SDK. A ready-made B1 target, and a real robot that can be bought.
+- Reachy Mini (Pollen Robotics / Hugging Face): an open-source desktop robot with a head and a rotating body (heading + head, a direct match for our chain). It ships a MuJoCo simulation (`reachy-mini-daemon --sim`) and a Python SDK. A ready-made B1 target, and a real robot that can be bought.
 - MuJoCo Menagerie models: Robotis OP3 has head pan/tilt joints; other humanoids (Unitree G1, Booster T1) for later whole-body tests.
 - ROS 2: `ros2_control_demos` and `gz_ros2_control` demos as the starting point for B4.
 
@@ -246,7 +242,7 @@ Yes, this is possible, and it can be fully static: everything runs in the visito
 - A switch for each part: absent / internal / external. Turn the torso off and watch the head and eyes take up the slack.
 - Closed-loop panel: actuator lag, PID gains and a "hold the torso" disturbance, with the governor and latency compensation on or off. This is testbed B, live.
 - Live charts of joint angles, reference minus measured, and gaze error.
-- Sliders bound to the settings JSON, with export: tune a preset in the browser and download the JSON that the robot head loads.
+- Sliders bound to the settings, with export: tune a preset in the browser and download the YAML file that the robot head loads.
 
 ### Stack (the first option listed is the recommendation)
 
@@ -277,7 +273,7 @@ The port comes in phase 5, which is late for the first public demo. Because the 
   - Subscribes to `/joint_states` (the measured pose, fed into `report`).
   - Gets the target as `geometry_msgs/PointStamped` in any frame, transformed by tf2 into `base_link`.
   - Publishes setpoints to ros2_control: a `JointTrajectoryController` (position + velocity), or forward position/velocity controllers. The PID gains live in ros2_control.
-  - Parameters: the settings JSON path, or ROS params mirroring it. The URDF importer fills in the A5 offsets.
+  - Parameters: the settings file path, or ROS params mirroring it. The URDF importer fills in the A5 offsets.
   - Diagnostics on a topic for RViz / rqt_plot.
 - Language: start with rclpy (wraps the Python reference). Move to rclcpp on the C++ header port.
 - Real robot head: a ros2_control hardware interface for its servos (for example `dynamixel_hardware` if they're Dynamixels), the same URDF, and the same launch file with `use_sim:=false`.
@@ -295,7 +291,7 @@ The port comes in phase 5, which is late for the first public demo. Because the 
 | Rust | `no_std` + `libm`, `serde` feature for settings, proptest; crate `lookaround-gaze` | optional PyO3 bindings |
 | C# | netstandard2.1 (Unity + .NET 8), xUnit, NuGet | net8-only |
 | TS | TypeScript, zero-dependency ESM, vitest, npm | plain JS |
-| Settings | JSON + JSON Schema (validated in CI) | YAML, TOML |
+| Settings | YAML (comments carry sources and notes) + JSON Schema on the loaded data (validated in CI) | JSON, TOML |
 | Conformance | scenario JSON → golden JSONL from Python → a runner per port. Tolerances are set per port when that port is built. Scenarios include closed-loop ones with scripted "measured" inputs | CSV |
 | CI | GitHub Actions: 5 languages × Win/Linux, conformance, a ROS build job (`ros-tooling/setup-ros`) | |
 | Docs | MkDocs Material | Sphinx, Docusaurus |
@@ -305,7 +301,7 @@ The port comes in phase 5, which is late for the first public demo. Because the 
 
 ```
 lookaround/
-  presets/*.json             # human_standing, human_seated, human_swivel, head_only, owl, pan_tilt, robot_head
+  presets/*.yaml             # human_standing, human_seated, human_swivel, head_only, owl, pan_tilt, robot_head
   schema/settings.schema.json
   conformance/
     scenarios/*.json         # scripted targets, measured-pose scripts, dt, seed
@@ -328,13 +324,13 @@ lookaround/
 
 ### Phase 0: Spec and skeleton
 - `git init`, the repo layout, LICENSE-MIT + LICENSE-APACHE.
-- Spec (`docs/spec.md`, drafted): frames, units, settings schema (A1), the report/update contract (A2), the cascade (A3), the governor and latency compensation (A4), geometry (A5), the base decision (A6), the integrator and velocity estimator.
+- Spec (`docs/spec.md`, drafted): frames, units, settings schema (A1), the set_root/feedback/update contract (A2), the cascade (A3), the governor and latency compensation (A4), geometry (A5), the base decision (A6), the integrator and velocity estimator.
 - Presets + schema; parameter-provenance table.
 - Read the full Land 2004 and McCluskey & Cullen 2007 papers; find cervical and thoracolumbar range-of-motion sources for the hard limits.
 - Done when: the spec is reviewed.
 
 ### Phase 1: Python reference core
-- The cascade, spring with v/a limits, governor, latency compensation, base decision, null/internal/external, open and closed loop.
+- The cascade, spring with v/a limits, governor, latency compensation, heading decision, null/internal/external, open and closed loop.
 - Tests: unit tests, hypothesis properties, and the idea.md backward-compatibility golden.
 - Done when: the head-only config matches idea.md and all property tests pass.
 
@@ -366,7 +362,7 @@ lookaround/
 
 | Risk | Mitigation |
 |---|---|
-| Hand-picked torso and base numbers look wrong | They live in presets, are tuned in the testbed, and are flagged as hand-picked in the docs. |
+| Hand-picked torso and heading numbers look wrong | They live in presets, are tuned in the testbed, and are flagged as hand-picked in the docs. |
 | The closed loop oscillates (lookaround and the PID fighting each other) | The governor (A4), feed-forward velocity, and testbed B sweeps across lag and gain ranges (B2). Document recommended PID bandwidth relative to `omega`. |
 | Ports drift apart | Spec + golden traces + CI conformance; ports target tagged spec versions only. |
 | Float32 ports diverge over long runs | Per-port tolerances (set when each port is built), per-step comparison, short scenarios. |

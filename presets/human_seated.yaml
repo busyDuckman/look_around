@@ -1,0 +1,48 @@
+# Adult in a fixed chair, height 1.75 m. Seated geometry is approximate.
+# Same head and eyes as human_standing; see that file for the sources of those values.
+
+spec_version: "0.2.0"
+name: human_seated
+description: Adult in a fixed chair. No heading (cannot turn), pelvis held by the chair, chest limited to about +-10 deg.
+angle_unit: deg
+
+heading: null                          # a fixed chair: the looker cannot turn
+
+# Mehrotra et al. 2025: torso yaw SD 11.5 deg seated in a fixed chair vs 56 deg standing.
+# The chair holds the pelvis, so only the chest turns.
+torso:
+  - name: chest
+    offset: { xyz: [0, 0, 0.75] }      # seated pelvis ~0.50 m + 0.25 m to the lower thoracic spine
+    yaw:
+      limits: [-10, 10]
+      split:
+        pos: { share: 0.15, dead_zone: 45, softness: 8 }    # hand-picked
+        neg: { share: 0.15, dead_zone: 45, softness: 8 }
+      dynamics:
+        omega: 3.0
+        v_max: 60
+        latency: 0.3
+        deadband: 3
+
+head:
+  offset: { xyz: [0, 0, 0.335] }       # seated eye height ~1.20 m
+  yaw:
+    limits: [-80, 80]
+    split:
+      pos: { share: 0.69, dead_zone: 12, softness: 3 }
+      neg: { share: 0.69, dead_zone: 12, softness: 3 }
+    dynamics: { omega: 5.0, v_max: 90, latency: 0.1, deadband: 2 }
+  pitch:
+    limits: [-35, 30]
+    rest: -8
+    split:
+      pos: { share: 0.52, dead_zone: 12, softness: 3 }
+      neg: { share: 1.0, dead_zone: 10, softness: 4 }
+    dynamics: { omega: 5.0, v_max: 90, latency: 0.1, deadband: 2 }
+
+eyes:
+  offset: { xyz: [0.08, 0, 0.115] }
+  binocular: false
+  ipd: 0.063
+  yaw: { limits: [-35, 35] }
+  pitch: { limits: [-35, 35] }

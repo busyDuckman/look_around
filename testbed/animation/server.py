@@ -22,6 +22,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import yaml
 from websockets.asyncio.server import ServerConnection, broadcast, serve
 
 import lookaround as la
@@ -54,7 +55,7 @@ class Scene:
             raise ValueError(name)
         self.preset = name
         path = la.preset_path(name)
-        self.doc: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        self.doc: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
         self.looker = la.Looker(la.Settings.load(self.doc))
 
     def config(self) -> str:
@@ -96,6 +97,7 @@ class Scene:
         target = self.target(dt)
         out = self.looker.update(dt, target)
         msg = {"type": "frame", "t": out.t, "target": target, "pose": out.pose,
+               "root": {"position": out.root_position, "heading": out.root_heading},
                **out.to_dict()}
         return json.dumps(msg)
 

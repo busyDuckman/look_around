@@ -1,0 +1,33 @@
+# The original model in .plans/idea.md, exactly: eyes and head only, open loop.
+# Used by the idea.md compatibility test, so do not tune these values; tune human_* instead.
+# Unlike the human presets, the head takes its share from the first degree (no dead zone),
+# as Kim, Reed & Martin 2010 report it.
+
+spec_version: "0.2.0"
+name: head_only
+description: The idea.md model exactly. Eye point at the head pivot, head yaw continuous, no dead zones for yaw or upward pitch.
+angle_unit: deg
+
+heading: null
+torso: []
+
+head:
+  offset: { xyz: [0, 0, 1.6] }
+  yaw:
+    limits: null                       # idea.md does not limit head yaw
+    split:
+      pos: { share: 0.69 }             # Kim et al. 2010
+      neg: { share: 0.69 }
+    dynamics: { omega: 5.0, v_max: 90 }
+  pitch:
+    limits: [-35, 30]
+    rest: -8
+    split:
+      pos: { share: 0.52 }             # Kim et al. 2010
+      neg: { share: 1.0, dead_zone: 10, softness: 4 }
+    dynamics: { omega: 5.0, v_max: 90 }
+
+eyes:
+  offset: { xyz: [0, 0, 0] }           # idea.md measures gaze from a fixed eye point
+  yaw: { limits: [-35, 35] }
+  pitch: { limits: [-35, 35] }

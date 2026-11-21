@@ -2,7 +2,7 @@
 
 A library for generating natural-looking motion for anything that can look around (people, robots, animals).
 
-The goal is a really simple and intuitive control interface, a .json that defines the system (constraints, speeds, etc.), a powerful backend based on existing research that does the rest. The system is a type of augmented control, allowing a thing to look at a target while performing other tasks.
+The goal is a really simple and intuitive control interface, a YAML file that defines the system (constraints, speeds, etc.), a powerful backend based on existing research that does the rest. The system is a type of augmented control, allowing a thing to look at a target while performing other tasks.
 
 It's suitable for both animation and control systems (PID loop).
 
@@ -34,7 +34,7 @@ The setup file specifies if these things exist, what their range of movement is,
 ## The settings file
 
 
-You describe the looker in a settings file: which parts it has (eyes, head, torso, base) and their limits. Each tick you give it a target point and, optionally, the measured pose of its joints. It returns setpoints for the joints it drives. The eyes take small shifts, the head takes a share, the torso joins on large shifts, and the base turns when the target stays far off to the side. Shares and limits come from published eye-head-torso studies.
+You describe the looker in a YAML settings file: which parts it has (heading, torso segments, head, eyes), their limits, dead zones, shares and speeds, with the sources noted as comments next to the values. Each tick you tell it where the looker stands, give it a target as a world point and, optionally, the measured joint angles. It returns setpoints for the joints it drives. The eyes take small shifts, the head joins past its dead zone, the torso joins on large shifts, and the heading turns when the target stays far off to the side. Shares and limits come from published eye-head-torso studies.
 
 lookaround does not do motor control. Its setpoints feed your own PID loops, servos or animation. If a joint doesn't get where it was asked (lag, a joint held by another controller, or a part moved by something else), the parts further out make up the difference.
 
@@ -51,16 +51,19 @@ Status: early development. The spec and the Python reference implementation exis
 
 import lookaround as la
 
-looker = la.Looker.from_preset("human_sitting")
+looker = la.Looker.from_preset("human_seated")
 
 while running:
 
-    # Update measured pose (closed loop)
-    looker.feedback_roll_pitch_yaw(LookerParts::base, [measured_torso_yaw, 0, 0])   
+    # Where it stands in the world (position persists; heading for turning lookers)
+    looker.set_root(position=chair_position, heading=chair_heading)
+
+    # Update measured pose (closed loop): measured joint angles, radians
+    looker.feedback({"torso.0.yaw": measured_torso_yaw})
 
     # Is the ball an obtainable target
     if looker.reachable(ball_position):
-        out = looker.update(time_delta, ball_position)   # look at the ball
+        out = looker.update(time_delta, ball_position)   # look at the ball (world point)
     else:
         out = looker.update(time_delta, None)           # return to neutral
     
@@ -75,21 +78,21 @@ while running:
 
 | Preset | Parts |
 |---|---|
-| `human_standing` | eyes, head, torso, base (feet) |
-| `human_seated` | eyes, head, limited torso; no base |
-| `human_swivel` | as standing, with a swivel chair as the base |
+| `human_standing` | eyes, head, torso (pelvis + chest), heading (feet) |
+| `human_seated` | eyes, head, limited chest; no heading |
+| `human_swivel` | eyes, head, chest, with the swivel chair as the heading |
 | `head_only` | eyes and head (the original model in `.plans/idea.md`) |
 | `pan_tilt` | head only, continuous pan, acceleration-limited |
 | `owl` | head only, about 270° of yaw |
 
-Any part can be left out (`null`) or marked `"external": true`, meaning something else drives it and lookaround only reads it.
+Any part can be left out (`null`) or marked `external: true`, meaning something else drives it and lookaround only reads it.
 
 ## Layout
 
 ```
 docs/spec.md                  the specification every implementation follows
 schema/settings.schema.json   JSON Schema for settings files
-presets/                      shared settings presets
+presets/                      shared settings presets (YAML, with sources as comments)
 python/                       Python reference implementation and tests
 testbed/animation/            testbed A: Python server driving the browser viewer
 web/testbed/                  browser viewer (three.js mannequin)

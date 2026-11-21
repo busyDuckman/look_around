@@ -1,0 +1,52 @@
+# Adult in a swivel chair, height 1.75 m. Seated geometry is approximate.
+# Mehrotra et al. 2025: in a swivel chair people explore almost like standing (torso yaw SD 47 deg
+# vs 56 deg standing): rotational freedom matters more than being upright. The chair is the heading.
+# Head and eyes as human_standing; see that file for sources.
+
+spec_version: "0.2.0"
+name: human_swivel
+description: Adult in a swivel chair. The chair turns like feet would (no step latency, shorter dwell); the chest turns on the chair.
+angle_unit: deg
+
+heading:
+  yaw:
+    limits: null
+    dynamics: { omega: 3.0, v_max: 120, latency: 0.0, deadband: 3 }   # hand-picked
+  decision:
+    turn_now: 100
+    dwell_angle: 30
+    dwell_time: 1.0                    # hand-picked: quicker to swivel than to step round
+    settle_angle: 5
+
+torso:
+  - name: chest
+    offset: { xyz: [0, 0, 0.75] }
+    yaw:
+      limits: [-40, 40]                # hand-picked
+      split:
+        pos: { share: 0.35, dead_zone: 45, softness: 8 }
+        neg: { share: 0.35, dead_zone: 45, softness: 8 }
+      dynamics: { omega: 3.0, v_max: 60, latency: 0.3, deadband: 3 }
+
+head:
+  offset: { xyz: [0, 0, 0.335] }
+  yaw:
+    limits: [-80, 80]
+    split:
+      pos: { share: 0.69, dead_zone: 12, softness: 3 }
+      neg: { share: 0.69, dead_zone: 12, softness: 3 }
+    dynamics: { omega: 5.0, v_max: 90, latency: 0.1, deadband: 2 }
+  pitch:
+    limits: [-35, 30]
+    rest: -8
+    split:
+      pos: { share: 0.52, dead_zone: 12, softness: 3 }
+      neg: { share: 1.0, dead_zone: 10, softness: 4 }
+    dynamics: { omega: 5.0, v_max: 90, latency: 0.1, deadband: 2 }
+
+eyes:
+  offset: { xyz: [0.08, 0, 0.115] }
+  binocular: false
+  ipd: 0.063
+  yaw: { limits: [-35, 35] }
+  pitch: { limits: [-35, 35] }

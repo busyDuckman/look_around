@@ -3,11 +3,12 @@
     import lookaround as la
 
     looker = la.Looker.from_preset("human_standing")
-    looker.report({"base.yaw": 0.1})            # optional: measured pose (closed loop)
-    out = looker.update(1 / 60, (1.5, 0.4, 1.2)) # target point in the mount frame, or None
+    looker.set_root(position=(2.0, 1.0, 0.0), heading=0.5)   # where it stands in the world
+    looker.feedback({"torso.0.yaw": 0.1})                     # optional: measured joints
+    out = looker.update(1 / 60, (3.5, 2.0, 1.4))              # target: a world point, or None
     out.setpoints["head.yaw"].position
 
-Behaviour is defined by docs/SPEC.md; this package is the reference implementation.
+Behaviour is defined by docs/spec.md; this package is the reference implementation.
 """
 
 import logging
@@ -16,7 +17,7 @@ from .looker import Diagnostics, Looker, Output, Setpoint
 from .settings import Settings, SettingsError, load_preset, preset_path
 
 __version__ = "0.1.0.dev0"
-SPEC_VERSION = "0.1.0"
+SPEC_VERSION = "0.2.0"
 
 # Library logging: silent unless the application configures the "lookaround" logger.
 logging.getLogger("lookaround").addHandler(logging.NullHandler())

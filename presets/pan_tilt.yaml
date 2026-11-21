@@ -1,0 +1,29 @@
+# Generic pan-tilt camera or robot head without eyes. Continuous pan, limited tilt.
+# Set up for real servos: acceleration limit, reference governor (max_lead) and a small known
+# actuator latency. Tune these to the actual hardware.
+
+spec_version: "0.2.0"
+name: pan_tilt
+description: Pan-tilt head without eyes. Continuous pan, limited tilt, acceleration-limited, with a reference governor for real servos.
+angle_unit: deg
+
+heading: null
+torso: []
+
+head:
+  offset: { xyz: [0, 0, 0.1] }
+  actuator_latency: 0.02               # s, servo response delay used for latency compensation
+  yaw:
+    limits: null                       # continuous pan
+    split:
+      pos: { share: 1.0 }
+      neg: { share: 1.0 }
+    dynamics: { omega: 8.0, v_max: 180, a_max: 720, max_lead: 15 }
+  pitch:
+    limits: [-30, 90]
+    split:
+      pos: { share: 1.0 }
+      neg: { share: 1.0 }
+    dynamics: { omega: 8.0, v_max: 180, a_max: 720, max_lead: 15 }
+
+eyes: null

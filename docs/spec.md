@@ -1,6 +1,6 @@
 # lookaround specification
 
-Version: 0.1.0-draft (2026-10-09)
+Version: 0.2.0-draft (2026-10-23)
 
 This document defines the behaviour every lookaround implementation must have. The Python package is the reference implementation; the C++, Rust, C# and TypeScript ports must match it within the tolerances defined for each port (section 11). Design background is in `.plans/plan.md`; sources for the numbers are in `.plans/research_notes.md`.
 
@@ -8,35 +8,57 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 
 ## 1. Scope
 
-lookaround computes where the movable parts of a "looker" (eyes, head, torso, base) should point so that it looks at a target in a natural way. Each tick, the application:
+lookaround computes where the movable parts of a "looker" should point so that it looks at a target in a natural way. The parts, from the ground up:
 
-1. reports the measured pose of the parts (optional for parts lookaround drives itself),
-2. calls `update` with the time step and the target, and
-3. receives setpoints for the parts lookaround drives.
+- heading: the yaw of the whole looker (a person turning on their feet, a robot base rotating),
+- torso: zero or more yaw-only segments (for example pelvis and chest),
+- head: yaw and pitch,
+- eyes: yaw and pitch.
+
+Pitch is done only by the head and eyes. Everything below the head is yaw only.
+
+Each tick, the application:
+
+1. tells lookaround where the looker stands (`set_root`), if that has changed,
+2. feeds back the measured joint angles (`feedback`, optional for joints lookaround drives itself),
+3. calls `update` with the time step and the target, a point in the world, and
+4. receives setpoints for the joints lookaround drives.
 
 lookaround does not do motor control. Setpoints go to the application's own PID loops, servos or animation system.
 
-Out of scope for 0.1: saccade and smooth-pursuit eye dynamics (reserved for 0.2), torso and base pitch or roll, head roll, translation of the base (walking), multiple simultaneous targets.
+Out of scope for 0.2: saccade and smooth-pursuit eye dynamics, torso pitch or roll, head roll, moving the root's position (walking), multiple simultaneous targets.
 
 ## 2. Units and numbers
 
 - Lengths in metres, time in seconds, angles in radians in the API.
-- A settings file MAY declare `"angle_unit": "deg"`. Implementations MUST then multiply every field marked *angle* in section 4 by π/180 when loading. Fields that are not angles (`omega`, `freq`, `share`, lengths, times) are never converted.
+- A settings file MAY declare `angle_unit: deg`. Implementations MUST then multiply every field marked *angle* in section 4 by π/180 when loading. Fields that are not angles (`omega`, `share`, lengths, times) are never converted.
 - All arithmetic is IEEE-754 double precision in the reference implementation. Ports MAY offer single precision.
 - `wrap(a)` maps an angle to the interval (−π, π]: `wrap(a) = a − 2π·ceil((a − π) / (2π))`.
 - `clamp(x, lo, hi) = min(max(x, lo), hi)`.
 - `softplus(z) = z + log1p(exp(−z))` if z > 0, else `log1p(exp(z))`. This form avoids overflow.
 - `sign(x)` is +1 for x ≥ 0, −1 otherwise.
+- `Rz(a)` is a rotation by `a` about the z axis.
 
 ## 3. Frames and kinematic chain
 
-### 3.1 Mount frame M
+### 3.1 World frame
 
-The frame the whole looker stands on. Its origin is at the base pivot, z points up, and its orientation does not rotate with the base. For a robot on a mobile base this is typically the odometry frame translated to the robot; for a character it is the world frame translated to the character. If the base part is `null`, M is simply the body's frame.
+Any fixed frame the application uses: the game world, or ROS `map` / `odom`. z points up. The target is given in the world frame (section 7).
 
-The target is given in M (section 7).
+### 3.2 Root
 
-### 3.2 Axes
+The root is the looker's ground frame: its origin is the point on the floor under the looker, z up, x along the looker's heading. It corresponds to a game rig's root bone and to ROS `base_footprint`.
+
+```
+Root = Trans(position) · Rz(heading)
+```
+
+- `position` (a point in the world frame) is set by `set_root` and persists until changed. Default (0, 0, 0).
+- `heading` is the yaw of the root, measured in the world frame from world +x. Where it comes from depends on the heading part (section 6.1).
+
+With no `set_root` call at all, the root is the world origin facing +x, so a fixed looker can use its own frame as the world.
+
+### 3.3 Axes
 
 Right-handed, x forward, y left, z up (ROS REP 103).
 
@@ -44,27 +66,27 @@ Right-handed, x forward, y left, z up (ROS REP 103).
 - pitch: positive pitch tilts the facing direction up. A joint pitch of θ is a rotation of −θ about the local y axis.
 - A part's facing direction is its local +x axis.
 
-### 3.3 Chain
+### 3.4 Chain
 
 ```
-M --offset_base--> base(yaw) --offset_torso--> torso(yaw) --offset_head--> head(yaw, pitch) --offset_eyes--> eyes(yaw, pitch)
+World --Root--> torso[0](yaw) --> torso[1](yaw) --> ... --> head(yaw, pitch) --> eyes(yaw, pitch)
 ```
 
-Each part's angles are relative to its parent. A part that is `null` is removed from the chain: its offset and rotation are the identity, and the next part attaches to its parent. For example, with `torso: null` the head offset is applied directly after the base rotation.
+Each torso segment, the head and the eyes carry an `offset` from their parent's joint frame. The first torso segment's parent is the root (or the head's, if there are no torso segments). Each joint angle is relative to its parent. A part that is absent is removed from the chain and the next part attaches to its parent.
 
-### 3.4 Transforms
+### 3.5 Transforms
 
-The pose of part k's joint frame in its parent frame is
+The pose of joint k's frame in its parent frame is
 
 ```
 T_k = Offset_k · Rz(yaw_k) · Ry(−pitch_k)
 ```
 
-where `Offset_k = Trans(xyz) · Rz(rpy[2]) · Ry(rpy[1]) · Rx(rpy[0])` (the URDF joint-origin convention). Parts without a pitch axis use pitch_k = 0.
+where `Offset_k = Trans(xyz) · Rz(rpy[2]) · Ry(rpy[1]) · Rx(rpy[0])` (the URDF joint-origin convention). Joints without a pitch axis use pitch_k = 0.
 
-The eyes are treated differently: `offset_eyes` places the eye point (cyclopean point, between the eyes) in the head frame, and eye yaw and pitch rotate the gaze about that point. With `binocular: true`, the left and right eye centres are at the eye point ± (0, ipd/2, 0) in the eye-point frame; left is +y.
+`offset` of the eyes places the eye point (cyclopean point, between the eyes) in the head frame, and eye yaw and pitch rotate the gaze about that point. With `binocular: true`, the left and right eye centres are at the eye point ± (0, ipd/2, 0) in the eye-point frame; left is +y.
 
-### 3.5 Direction to angles
+### 3.6 Direction to angles
 
 For a vector d expressed in a frame F:
 
@@ -73,52 +95,65 @@ yaw(d)   = atan2(d.y, d.x)
 pitch(d) = atan2(d.z, hypot(d.x, d.y))
 ```
 
-Because every joint is a yaw followed by a pitch about the same origin, a direction (yaw, pitch) in a part's parent frame is reached exactly by joint angles (yaw, pitch), apart from the offset translation between the joint origin and the eye point. That translation is accounted for by always measuring directions from the eye point (section 8.2).
-
 ## 4. Settings document
 
-A settings document is a JSON object. The JSON Schema in `schema/settings.schema.json` is normative for structure; this section is normative for meaning. Fields marked *angle* are converted when `angle_unit` is `"deg"`.
+A settings document is a YAML file (JSON is also accepted, since the data model is the same). YAML is used so that the reasoning and sources for each value can sit next to it as comments; comments are ignored by the loader. The JSON Schema in `schema/settings.schema.json` is normative for the structure of the loaded data; this section is normative for meaning. Fields marked *angle* are converted when `angle_unit` is `deg`.
 
 ### 4.1 Top level
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `spec_version` | string | required | Spec version the document targets, e.g. `"0.1.0"`. |
+| `spec_version` | string | required | Spec version the document targets, e.g. `"0.2.0"`. |
 | `name` | string | required | Identifier. |
 | `description` | string | `""` | Free text. |
-| `angle_unit` | `"rad"` or `"deg"` | `"rad"` | Unit for all *angle* fields. |
+| `angle_unit` | `rad` or `deg` | `rad` | Unit for all *angle* fields. |
 | `max_substep` | number > 0 (s) | `1/120` | Largest integration step (section 9.4). |
-| `velocity_filter_tau` | number > 0 (s) | `0.02` | Time constant of the velocity estimator (section 6.3). |
-| `base`, `torso`, `head`, `eyes` | Part or `null` | `null` | The four parts. At least one MUST be non-null. |
+| `velocity_filter_tau` | number > 0 (s) | `0.02` | Time constant of the velocity estimator (section 6.4). |
+| `heading` | Heading or `null` | `null` | Section 4.3. |
+| `torso` | list of Segment, or `null` | `[]` | Torso segments, from the root outwards. `null` and `[]` both mean none. |
+| `head`, `eyes` | Part or `null` | `null` | |
 
-### 4.2 Part (common fields)
+At least one joint (a torso segment, the head or the eyes) MUST be present.
+
+### 4.2 Part (torso segment, head, eyes)
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
+| `name` | string | `torso.<i>` | Torso segments only: a readable name (e.g. `pelvis`) used in logs. Keys always use the index. |
 | `external` | boolean | `false` | `true` if something else drives the part (section 5). |
 | `offset.xyz` | [x, y, z] (m) | [0, 0, 0] | Translation from the parent joint frame. |
 | `offset.rpy` | [r, p, y] (*angle*) | [0, 0, 0] | Fixed rotation from the parent joint frame. |
-| `actuator_latency` | number ≥ 0 (s) | 0 | Known delay between a setpoint and the measured response. Used for latency compensation (section 6.4). |
+| `actuator_latency` | number ≥ 0 (s) | 0 | Known delay between a setpoint and the measured response (section 6.5). |
 | `yaw` | Axis | required | |
-| `pitch` | Axis | required for `head` and `eyes`; MUST be absent for `base` and `torso` | |
+| `pitch` | Axis | required for `head` and `eyes`; MUST be absent for torso segments | |
 
-Part-specific fields:
+Eyes only: `binocular` (boolean, default false) and `ipd` (m, default 0.063).
 
-- `eyes.binocular` (boolean, default false) and `eyes.ipd` (m, default 0.063).
-- `base.decision` (section 8.3): `turn_now` (*angle*, default 100°), `dwell_angle` (*angle*, default 30°), `dwell_time` (s, default 1.5), `settle_angle` (*angle*, default 5°).
+### 4.3 Heading
 
-### 4.3 Axis
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `external` | boolean | `false` | `true` if something else turns the looker (section 5). |
+| `actuator_latency` | number ≥ 0 (s) | 0 | As for parts. |
+| `yaw` | Axis | required | Limits are normally `null` (continuous). |
+| `decision` | Decision | see below | When to turn (section 8.3). |
+
+Decision: `turn_now` (*angle*, default 100°), `dwell_angle` (*angle*, default 30°), `dwell_time` (s, default 1.5), `settle_angle` (*angle*, default 5°).
+
+The heading has no offset: the root is its frame.
+
+### 4.4 Axis
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `limits` | [min, max] (*angle*) or `null` | `null` | Hard joint limits. `null` means continuous rotation; only allowed for yaw. |
 | `rest` | *angle* | 0 | Rest angle. Idle target; origin for the split. |
-| `split` | Split | see below | How much of the gaze this part takes (section 8.1). Only for `torso` and `head`. Default: share 1, knee 0, soft 0 on both sides. |
+| `split` | Split | share 1, no dead zone | How much of the gaze this part takes (section 8.1). Torso segments and head only. |
 | `dynamics` | Dynamics or `null` | `null` | `null` means ideal: the setpoint equals the target (section 9.5). Ignored for external parts. |
 
-Split: `{ "pos": Hinge, "neg": Hinge }`. `pos` applies when the gaze is on the positive side of rest (left, or up), `neg` otherwise.
+Split: `{ pos: Share, neg: Share }`. `pos` applies when the gaze is on the positive side of rest (left, or up), `neg` otherwise.
 
-Hinge: `share` (≥ 0), `knee` (*angle*, ≥ 0), `soft` (*angle*, ≥ 0).
+Share: `share` (≥ 0), `dead_zone` (*angle*, ≥ 0), `softness` (*angle*, ≥ 0). Within `dead_zone` of rest the part takes none of the gaze; beyond it, it takes `share` of the rest. `softness` rounds the corner (section 8.1): the change is spread over roughly `softness` either side of `dead_zone`, so the part already moves slightly just inside the dead zone (about 0.2 · share · softness at `dead_zone − softness`). `softness: 0` gives a sharp corner and no movement at all inside the dead zone.
 
 Dynamics:
 
@@ -135,30 +170,37 @@ Dynamics:
 
 | Setting | lookaround reads | lookaround outputs |
 |---|---|---|
-| `null` | nothing | nothing |
-| part object, `external: false` (the default) | measured angles and velocities, if reported | a setpoint per axis |
-| part object, `external: true` | measured angles and velocities | nothing |
+| absent (`null`, or not listed) | nothing | nothing |
+| present, `external: false` (the default) | measured angles and velocities, if fed back | a setpoint per axis |
+| present, `external: true` | measured angles and velocities | nothing |
 
-In this document a non-null part with `external: false` is called internal, and one with `external: true` is called external. There are no requests to the application; an external part is an input only.
+In this document a present part with `external: false` is called internal, and one with `external: true` is called external. There are no requests to the application; an external part is an input only. Each torso segment has its own state.
 
-## 6. Measurements
+## 6. Inputs
 
-### 6.1 Report
+### 6.1 Root: `set_root(position, heading)`
 
-Before each `update`, the application MAY call `report(measured)`. A measurement gives, per joint axis, a `position` and optionally a `velocity`. A report applies to the next `update` only.
+`position` is the root's ground point in the world frame; it persists until changed. `heading` is optional:
 
-Joint axes are named by flat keys `<part>.<axis>`: `base.yaw`, `torso.yaw`, `head.yaw`, `head.pitch`, `eyes.yaw`, `eyes.pitch`. With `binocular: true` the eye keys are `eyes.left.yaw`, `eyes.left.pitch`, `eyes.right.yaw` and `eyes.right.pitch`. The same keys are used for setpoints and diagnostics.
+- Heading absent or external: `heading` sets the root's heading, which persists until changed (default 0). For an external heading this is its measurement.
+- Heading internal: a given `heading` is its measured value for the next update only, like `feedback`. If it is not given, the heading runs open loop (6.3).
 
-### 6.2 Missing values
+### 6.2 Joints: `feedback(measured)`
+
+Before each `update`, the application MAY call `feedback(measured)`. A measurement gives, per joint axis, a `position` and optionally a `velocity`. A feedback call applies to the next `update` only.
+
+Joint axes are named by flat keys: `torso.0.yaw`, `torso.1.yaw`, …, `head.yaw`, `head.pitch`, `eyes.yaw`, `eyes.pitch`. With `binocular: true` the eye keys are `eyes.left.yaw`, `eyes.left.pitch`, `eyes.right.yaw` and `eyes.right.pitch`. The heading's key is `heading.yaw`; it is used for setpoints and diagnostics but is not accepted by `feedback` (use `set_root`).
+
+### 6.3 Missing values
 
 For each axis at each `update`:
 
-- Internal, not reported (open loop): for the axis's own latency gate and governor, the measured position and velocity are its reference state before this update's step. For the parts further out, the pose used is its reference state after the step (section 8). In open loop this keeps the eyes exactly on target while the head moves, as in idea.md.
-- External, not reported: the last reported value is used. Before the first report, rest and zero velocity are used.
+- Internal, not fed back (open loop): for the axis's own latency gate and governor, the measured position and velocity are its reference state before this update's step. For the parts further out, the pose used is its reference state after the step (section 8). In open loop this keeps the eyes exactly on target while the head moves, as in idea.md.
+- External, not fed back: the last value is used. Before the first one, rest and zero velocity are used.
 
-### 6.3 Velocity estimate
+### 6.4 Velocity estimate
 
-If a position is reported without a velocity, the velocity is estimated:
+If a position is given without a velocity, the velocity is estimated:
 
 ```
 v_raw = diff(x_now, x_prev) / dt              (diff = wrap(a − b) for continuous axes, a − b otherwise)
@@ -168,7 +210,7 @@ v_est = v_est + alpha · (v_raw − v_est)
 
 x_prev is the measured position used in the previous update; v_est starts at 0. On the first update there is no x_prev and v_est = 0.
 
-### 6.4 Latency compensation
+### 6.5 Latency compensation
 
 Every computation in section 8 uses the predicted pose:
 
@@ -180,15 +222,13 @@ x_pred = x_meas + v_meas · actuator_latency
 
 ## 7. Target
 
-`update(dt, target)` takes `dt > 0` and a target that is either a point in M (metres) or `null`. `null` means idle (section 8.5).
+`update(dt, target)` takes `dt > 0` and a target that is either a point in the world frame (metres) or `null`. `null` means idle (section 8.5). If the target is closer than 1e-6 m to the eye point, it is treated as `null` for that update.
 
-If the target is closer than 1e-6 m to the eye point, it is treated as `null` for that update.
-
-Implementations MAY provide a helper that accepts the target in the base frame and converts it using the measured base yaw.
+`reachable(target)` answers whether the looker could look at a world point from where it currently stands, without turning its heading. With the root at its current position and heading and d = target − eye point (eye point from the most recent pose), let g_yaw = yaw(d) and g_pitch = pitch(d) in the root frame. The target is reachable if g_yaw lies within the sum of the yaw limits of the torso segments, head and eyes (if any of them is continuous, yaw is always reachable), and g_pitch lies within the sum of the pitch limits of the head and eyes. Offsets between joint pivots are ignored. It does not change any state.
 
 ## 8. Targets for each part
 
-Parts are processed one at a time from the base outwards: compute the part's raw targets, then step its internal axes (section 9), then move on to the next part. The pose used for the computations is a table of joint angles that starts as the predicted measured pose (6.4) of every axis. After a part has been stepped, each of its internal axes that was not reported is overwritten in the table with its new reference position, predicted by 6.4 with the new reference velocity. Reported and external axes keep their measured value.
+Parts are processed one at a time from the root outwards: heading, torso segments in order, head, eyes. For each part: compute its raw targets, then step its internal axes (section 9), then move on to the next part. The pose used for the computations is a table of joint angles that starts as the predicted measured pose (6.5) of every axis. After a part has been stepped, each of its internal axes that was not fed back is overwritten in the table with its new reference position, predicted by 6.5 with the new reference velocity. Fed-back and external axes keep their measured value.
 
 So every part works from the measured pose of the parts above it (or, in open loop, from their just-updated reference), never from their setpoints. This is what makes the further-out parts make up for parts that lag, are held, or are external.
 
@@ -199,39 +239,42 @@ For an axis with rest r, a gaze angle g (section 8.2) and child reach R (section
 ```
 e    = wrap(g − r)  for yaw,   g − r  for pitch
 side = pos if e ≥ 0 else neg
-h(x) = share · max(0, x − knee)                                           if soft = 0
-h(x) = share · soft · ( softplus((x − knee)/soft) − softplus(−knee/soft) ) if soft > 0
-u    = max( h(|e|), |e| − R_side )
+x    = |e|
+h(x) = share · max(0, x − dead_zone)                                                     if softness = 0
+h(x) = share · softness · ( softplus((x − dead_zone)/softness) − softplus(−dead_zone/softness) )   if softness > 0
+u    = max( h(x), x − R_side )
 raw  = r + sign(e) · u
 ```
 
-The subtraction of `softplus(−knee/soft)` makes h(0) = 0, so the split passes exactly through rest. (idea.md leaves this term out, which puts the rest pose about 0.3° low; that offset is removed here on purpose.)
+The subtraction of `softplus(−dead_zone/softness)` makes h(0) = 0, so the split passes exactly through rest. (idea.md leaves this term out, which puts the rest pose about 0.3° low; that offset is removed here on purpose.)
 
 ### 8.2 Gaze angle and child reach
 
-The gaze angle g for part k is the (yaw, pitch) (3.5) of the vector from the eye point to the target, expressed in part k's zero-angle joint frame (its parent's frame composed with `Offset_k`). Both the frame and the eye point are computed from the current pose table (section 8 intro).
+The gaze angle g for part k is the (yaw, pitch) (3.6) of the vector from the eye point to the target, expressed in part k's zero-angle joint frame (its parent's frame composed with `Offset_k`). Both the frame and the eye point are computed from the current pose table (section 8 intro).
 
-The eye point is the origin of the eyes' zero-angle frame (head frame composed with `offset_eyes`). If the eyes are null, it is the origin of the furthest-out part's joint frame.
+The eye point is the origin of the eyes' zero-angle frame (head frame composed with the eyes' offset). If the eyes are absent, it is the origin of the furthest-out joint's frame.
 
-The child reach R_pos (R_neg) of an axis is the sum, over all non-null parts further out that have the same axis, of (max − rest) (respectively (rest − min)) of their limits. If any of them is continuous, R is +∞ and the second term of `u` has no effect.
+The child reach R_pos (R_neg) of an axis is the sum, over all present parts further out that have the same axis, of (max − rest) (respectively (rest − min)) of their limits. If any of them is continuous, R is +∞ and the second term of `u` has no effect.
 
-### 8.3 Base (yaw only)
+### 8.3 Heading (yaw only)
 
-If the base is internal, its raw target comes from a two-state decision rather than a split. Let a = the gaze yaw (8.2) in the base's zero-angle frame (M itself unless the base has an offset) and H = the held heading (initially the first measured base yaw, or rest).
+If the heading is internal, its raw target comes from a two-state decision rather than a split. Let a = the yaw (3.6), in the world frame, of the vector from the eye point to the target, and H = the held heading (initially the first measured heading, or rest).
 
 - HOLD: raw target = H. A dwell timer accumulates dt while |wrap(a − H)| > dwell_angle and resets to 0 otherwise. Switch to TURN if |wrap(a − H)| > turn_now or the timer reaches dwell_time.
-- TURN: raw target = a. Switch to HOLD, with H := a and the timer reset, when |wrap(a − x_pred_base)| ≤ settle_angle.
+- TURN: raw target = a. Switch to HOLD, with H := a and the timer reset, when |wrap(a − x_pred_heading)| ≤ settle_angle.
 - Idle (target null): stay in or switch to HOLD; the timer resets.
+
+Heading setpoints are world headings.
 
 ### 8.4 Torso, head, eyes
 
-- Torso yaw: split (8.1) of the gaze yaw in the base frame.
-- Head yaw and pitch: split of the gaze yaw and pitch in the torso frame (or the base frame, or M, if the parts above are null).
-- Eyes yaw and pitch: the gaze direction in the head frame, from the eye point (or from each eye centre when binocular), clamped to the eye limits. The eyes get the remainder, so they have no split.
+- Torso segment i: split (8.1) of the gaze yaw in its zero-angle frame.
+- Head yaw and pitch: split of the gaze yaw and pitch in its zero-angle frame.
+- Eyes yaw and pitch: the gaze direction in the eyes' zero-angle frame, from the eye point (or from each eye centre when binocular), clamped to the eye limits. The eyes get the remainder, so they have no split.
 
 ### 8.5 Idle
 
-With a null target, every axis's raw target is its rest, except the base, which holds H.
+With a null target, every axis's raw target is its rest, except the heading, which holds H.
 
 ### 8.6 Limits and the long way round
 
@@ -243,9 +286,9 @@ Each internal axis keeps a reference state: position x, velocity v, acceleration
 
 ### 9.1 Order of operations for one update
 
-1. Resolve measurements (6.2), estimate velocities (6.3), predict (6.4), and build the pose table.
+1. Resolve measurements (6.3), estimate velocities (6.4), predict (6.5), and build the pose table.
 2. If the target is closer than 1e-6 m to the eye point, treat it as null.
-3. For each part from the base outwards: raw targets (section 8); then for each of its internal axes: latency gate (9.2), integrate (9.4), governor (9.3), limits (9.6); then update the pose table.
+3. For each part from the root outwards: raw targets (section 8); then for each of its internal axes: latency gate (9.2), integrate (9.4), governor (9.3), limits (9.6); then update the pose table.
 4. Diagnostics (section 10), from the final pose table.
 5. Advance time: t := t + dt.
 
@@ -305,35 +348,36 @@ If x is outside the limits it is clamped to them, and v and a are set to 0 if th
 
 ### 9.7 Initial state
 
-On the first update, each internal axis's x is the reported position if one was reported, otherwise rest; v = a = 0; T = x; engaged = false.
+On the first update, each internal axis's x is the measured position if one was given, otherwise rest; v = a = 0; T = x; engaged = false.
 
 ## 10. Output
 
 `update` returns:
 
-- `setpoints`: for each internal joint axis key (6.1), `{position, velocity, acceleration}` (the reference state after 9.6). Base yaw setpoints are in M.
+- `setpoints`: for each internal joint axis key (6.2), `{position, velocity, acceleration}` (the reference state after 9.6). Heading setpoints are world headings.
 - `diagnostics` (read-only, for logging and plots):
-  - `gaze_error`: angle between the vector from the eye point to the target and the gaze direction, computed as atan2(|a × b|, a · b) for accuracy at small angles. The gaze direction is the facing of the furthest-out non-null part in the final pose table; for binocular eyes, the sum of the two eye directions. 0 when idle.
-  - `reachable`: true if the raw target of the furthest-out non-null part, before clamping, was within its limits.
+  - `gaze_error`: angle between the vector from the eye point to the target and the gaze direction, computed as atan2(|a × b|, a · b) for accuracy at small angles. The gaze direction is the facing of the furthest-out present part in the final pose table; for binocular eyes, the sum of the two eye directions. 0 when idle.
+  - `reachable`: true if the raw target of the furthest-out present part, before clamping, was within its limits.
   - `lead`: per internal axis, diff(x, x_meas) before the governor.
-  - `base_state`: `"hold"` or `"turn"`, or absent if the base is not internal.
+  - `heading_state`: `"hold"` or `"turn"`, or absent if the heading is not internal.
   - `vergence`: angle between the two eye directions when binocular, else absent.
 
 ### 10.1 Logging
 
-Implementations SHOULD log, through the platform's standard logging facility and at debug level, each change of: `reachable` (naming the joint and the angle it would need), the base state, and the governor holding a joint back or releasing it. They SHOULD log once, at warning level, when an external joint has not been reported before the first update. Messages are logged on changes only, never every update. Message wording is not normative and is not part of conformance.
+Implementations SHOULD log, through the platform's standard logging facility and at debug level, each change of: `reachable` (naming the joint and the angle it would need), the heading state, and the governor holding a joint back or releasing it. They SHOULD log once, at warning level, when an external joint has not been fed back before the first update. Messages are logged on changes only, never every update. Message wording is not normative and is not part of conformance.
 
-Implementations MUST reject non-finite measurements and targets.
+Implementations MUST reject non-finite measurements, root poses and targets.
 
 ## 11. Conformance
 
 Details are fixed in phase 3; this section sets the rules.
 
-- A scenario is a JSON file: a settings document (inline or a path), `dt`, the number of steps, a target script (a list of `[t, x, y, z]` or `[t, null]` keyframes, held until the next key), and an optional measurement script for closed-loop tests.
+- A scenario is a file holding a settings document (inline or a path), `dt`, the number of steps, a target script (a list of `[t, x, y, z]` or `[t, null]` keyframes in the world frame, held until the next key), an optional root script, and an optional measurement script for closed-loop tests.
 - The reference implementation produces a golden trace: one JSON object per update (JSONL) with `t`, every setpoint and every diagnostic.
 - A port passes if every value matches the golden trace within that port's tolerance, and every boolean and state string matches exactly. Tolerances (absolute, radians or seconds) are set per port, and per precision where a port offers both, when the port is built; they are recorded in this section.
 - Required scenarios include an idea.md compatibility scenario: the `head_only` preset in open loop, with `max_substep` set to the frame time, must match idea.md's `head_share` and `HeadSpring` (with idea.md's 0.3° rest offset removed as in 8.1).
+- Required scenarios include a frame-invariance scenario: translating and rotating the whole scene (target and root together) MUST leave every joint setpoint except the heading unchanged, and shift the heading setpoint by the rotation.
 
 ## 12. Versioning
 
-The spec uses semantic versioning. Settings documents declare `spec_version`; an implementation MUST reject a document with a different major version, and SHOULD warn on a newer minor version.
+The spec uses semantic versioning. Settings documents declare `spec_version`; an implementation MUST reject a document with a different major version, and SHOULD warn on a newer minor version. While the major version is 0, a different minor version is also rejected.

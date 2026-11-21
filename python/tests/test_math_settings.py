@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+from typing import Any
 
 import pytest
 from conftest import REPO, preset_doc
@@ -36,28 +37,45 @@ def test_presets_match_schema(preset_name: str) -> None:
 def test_presets_load(preset_name: str) -> None:
     s = la.load_preset(preset_name)
     assert s.name == preset_name
-    assert s.parts()
+    assert s.joints()
 
 
-def test_degrees_converted() -> None:
+def test_degrees_converted_and_named() -> None:
     s = la.load_preset("human_standing")
     assert s.head is not None and s.head.pitch is not None
     assert s.head.pitch.rest == pytest.approx(math.radians(-8))
+    assert s.head.yaw.split.pos.dead_zone == pytest.approx(math.radians(12))
     assert s.head.yaw.dynamics is not None
     assert s.head.yaw.dynamics.v_max == pytest.approx(math.radians(90))
     assert s.head.yaw.dynamics.omega == pytest.approx(5.0)  # not an angle
-    assert s.base is not None
-    assert s.base.decision.turn_now == pytest.approx(math.radians(100))
+    assert s.heading is not None
+    assert s.heading.decision.turn_now == pytest.approx(math.radians(100))
+    assert [p.name for p in s.torso] == ["pelvis", "chest"]
+    assert [p.key for p in s.torso] == ["torso.0", "torso.1"]
+
+
+def test_json_settings_still_load(tmp_path: Any) -> None:
+    path = tmp_path / "pan_tilt.json"
+    path.write_text(json.dumps(preset_doc("pan_tilt")), encoding="utf-8")
+    assert la.Settings.load(path).name == "pan_tilt"
+
+
+def _no_joints(d: dict[str, Any]) -> None:
+    d.update(torso=[], head=None, eyes=None)
 
 
 @pytest.mark.parametrize(
     "mutate",
     [
         lambda d: d.update(spec_version="1.0.0"),
-        lambda d: d["torso"].update(pitch={"limits": [-1, 1]}),
+        lambda d: d.update(spec_version="0.1.0"),
+        lambda d: d["torso"][0].update(pitch={"limits": [-1, 1]}),
         lambda d: d["head"]["pitch"].update(limits=None),
         lambda d: d["head"]["yaw"].update(limits=[10, -10]),
-        lambda d: [d.update({k: None}) for k in ("base", "torso", "head", "eyes")],
+        lambda d: d["head"]["yaw"]["split"].update(pos={"share": 0.69, "knee": 12}),
+        lambda d: d.update(base=d.pop("heading")),
+        lambda d: d["heading"].update(offset={"xyz": [0, 0, 1]}),
+        _no_joints,
     ],
 )
 def test_bad_settings_rejected(mutate) -> None:  # type: ignore[no-untyped-def]

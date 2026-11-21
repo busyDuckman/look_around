@@ -1,7 +1,8 @@
-"""Settings document (spec section 4): parsing, defaults and unit conversion.
+"""Settings document (spec section 4): loading, defaults and unit conversion.
 
-The JSON Schema in schema/settings.schema.json is the full structural check; this module
-checks what it needs to run and converts every angle field to radians.
+Settings files are YAML (JSON is also accepted). The JSON Schema in schema/settings.schema.json
+is the full structural check; this module checks what it needs to run and converts every angle
+field to radians.
 """
 
 from __future__ import annotations
@@ -13,9 +14,10 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 SPEC_MAJOR = 0
-SPEC_MINOR = 1
-PART_NAMES = ("base", "torso", "head", "eyes")
+SPEC_MINOR = 2
 
 Json = dict[str, Any]
 
@@ -25,16 +27,18 @@ class SettingsError(ValueError):
 
 
 @dataclass(frozen=True)
-class Hinge:
+class Share:
+    """How much of the gaze a part takes on one side of rest (spec 8.1)."""
+
     share: float = 1.0
-    knee: float = 0.0
-    soft: float = 0.0
+    dead_zone: float = 0.0
+    softness: float = 0.0
 
 
 @dataclass(frozen=True)
 class Split:
-    pos: Hinge = field(default_factory=Hinge)
-    neg: Hinge = field(default_factory=Hinge)
+    pos: Share = field(default_factory=Share)
+    neg: Share = field(default_factory=Share)
 
 
 @dataclass(frozen=True)
@@ -68,14 +72,18 @@ class Decision:
 
     def __post_init__(self) -> None:
         if self.settle_angle >= self.turn_now:
-            raise SettingsError("base.decision: settle_angle must be smaller than turn_now")
+            raise SettingsError("heading.decision: settle_angle must be smaller than turn_now")
 
 
 @dataclass(frozen=True)
 class Part:
-    name: str
+    """A joint in the chain: the heading, a torso segment, the head or the eyes."""
+
+    key: str                      # key prefix: "heading", "torso.0", "head", "eyes"
+    kind: str                     # "heading", "torso", "head" or "eyes"
     yaw: Axis
     pitch: Axis | None = None
+    name: str = ""                # readable name for logs (torso segments may set one)
     external: bool = False
     offset_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
     offset_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -83,6 +91,10 @@ class Part:
     binocular: bool = False
     ipd: float = 0.063
     decision: Decision = field(default_factory=Decision)
+
+    @property
+    def label(self) -> str:
+        return f"{self.key} ({self.name})" if self.name and self.name != self.key else self.key
 
     def axes(self) -> dict[str, Axis]:
         out = {"yaw": self.yaw}
@@ -98,21 +110,32 @@ class Settings:
     description: str = ""
     max_substep: float = 1.0 / 120.0
     velocity_filter_tau: float = 0.02
-    base: Part | None = None
-    torso: Part | None = None
+    heading: Part | None = None
+    torso: tuple[Part, ...] = ()
     head: Part | None = None
     eyes: Part | None = None
 
+    def joints(self) -> list[Part]:
+        """Torso segments, head and eyes that are present, from the root outwards."""
+        return [*self.torso, *(p for p in (self.head, self.eyes) if p is not None)]
+
     def parts(self) -> list[Part]:
-        """Non-null parts, base first."""
-        return [p for p in (self.base, self.torso, self.head, self.eyes) if p is not None]
+        """Every present part including the heading, from the root outwards."""
+        return ([self.heading] if self.heading is not None else []) + self.joints()
 
     @classmethod
     def load(cls, source: str | Path | Json) -> Settings:
         if isinstance(source, dict):
             return parse(source)
-        return parse(json.loads(Path(source).read_text(encoding="utf-8")))
+        path = Path(source)
+        text = path.read_text(encoding="utf-8")
+        doc = json.loads(text) if path.suffix.lower() == ".json" else yaml.safe_load(text)
+        if not isinstance(doc, dict):
+            raise SettingsError(f"{path}: expected a mapping at the top level")
+        return parse(doc)  # pyright: ignore[reportUnknownArgumentType]
 
+
+# ---- parsing helpers ---------------------------------------------------------------------------
 
 def _num(d: Json, key: str, default: float | None, k: float = 1.0) -> float:
     v = d.get(key, default)
@@ -139,11 +162,14 @@ def _vec3(v: Any, k: float = 1.0) -> tuple[float, float, float]:
     return (float(v[0]) * k, float(v[1]) * k, float(v[2]) * k)
 
 
-def _hinge(d: Json | None, k: float) -> Hinge:
+def _share(d: Json | None, k: float, where: str) -> Share:
     if d is None:
-        return Hinge()
-    return Hinge(share=_num(d, "share", None), knee=_num(d, "knee", 0.0, k),
-                 soft=_num(d, "soft", 0.0, k))
+        return Share()
+    for old in ("knee", "soft"):
+        if old in d:
+            raise SettingsError(f"{where}: '{old}' was renamed (use dead_zone / softness)")
+    return Share(share=_num(d, "share", None), dead_zone=_num(d, "dead_zone", 0.0, k),
+                 softness=_num(d, "softness", 0.0, k))
 
 
 def _axis(d: Json, k: float, where: str) -> Axis:
@@ -155,7 +181,8 @@ def _axis(d: Json, k: float, where: str) -> Axis:
             raise SettingsError(f"{where}: limits must be [min, max] with min < max")
     split = Split()
     if d.get("split") is not None:
-        split = Split(pos=_hinge(d["split"].get("pos"), k), neg=_hinge(d["split"].get("neg"), k))
+        split = Split(pos=_share(d["split"].get("pos"), k, where),
+                      neg=_share(d["split"].get("neg"), k, where))
     dyn = None
     if d.get("dynamics") is not None:
         dd = d["dynamics"]
@@ -173,26 +200,30 @@ def _axis(d: Json, k: float, where: str) -> Axis:
     return Axis(limits=limits, rest=rest, split=split, dynamics=dyn)
 
 
-def _part(name: str, d: Json, k: float) -> Part:
+def _part(key: str, kind: str, d: Json, k: float) -> Part:
     if "yaw" not in d:
-        raise SettingsError(f"{name}: yaw is required")
-    has_pitch = name in ("head", "eyes")
+        raise SettingsError(f"{key}: yaw is required")
+    has_pitch = kind in ("head", "eyes")
     if has_pitch and "pitch" not in d:
-        raise SettingsError(f"{name}: pitch is required")
+        raise SettingsError(f"{key}: pitch is required")
     if not has_pitch and "pitch" in d:
-        raise SettingsError(f"{name}: has no pitch axis (yaw only)")
-    yaw = _axis(d["yaw"], k, f"{name}.yaw")
-    pitch = _axis(d["pitch"], k, f"{name}.pitch") if has_pitch else None
+        raise SettingsError(f"{key}: has no pitch axis (only the head and eyes pitch)")
+    yaw = _axis(d["yaw"], k, f"{key}.yaw")
+    pitch = _axis(d["pitch"], k, f"{key}.pitch") if has_pitch else None
     if pitch is not None and pitch.limits is None:
-        raise SettingsError(f"{name}.pitch: pitch must have limits")
-    if name == "eyes" and yaw.limits is None:
+        raise SettingsError(f"{key}.pitch: pitch must have limits")
+    if kind == "eyes" and yaw.limits is None:
         raise SettingsError("eyes.yaw: eyes must have limits")
+    if kind == "heading" and "offset" in d:
+        raise SettingsError("heading: has no offset (the root is its frame)")
     offset: Json = d.get("offset") or {}
     dec: Json = d.get("decision") or {}
     return Part(
-        name=name,
+        key=key,
+        kind=kind,
         yaw=yaw,
         pitch=pitch,
+        name=str(d.get("name", "")),
         external=bool(d.get("external", False)),
         offset_xyz=_vec3(offset.get("xyz")),
         offset_rpy=_vec3(offset.get("rpy"), k),
@@ -214,37 +245,48 @@ def parse(doc: Json) -> Settings:
         major, minor = (int(x) for x in version.split("-")[0].split(".")[:2])
     except ValueError as e:
         raise SettingsError(f"bad spec_version {version!r}") from e
-    if major != SPEC_MAJOR:
-        raise SettingsError(f"spec_version {version} is not supported (major {SPEC_MAJOR})")
-    if minor > SPEC_MINOR:
-        import warnings
-
-        warnings.warn(f"settings target spec {version}, newer than this library", stacklevel=2)
+    if major != SPEC_MAJOR or (major == 0 and minor != SPEC_MINOR):
+        supported = f"{SPEC_MAJOR}.{SPEC_MINOR}"
+        raise SettingsError(f"spec_version {version} is not supported (reads {supported})")
+    if "base" in doc:
+        raise SettingsError("'base' was renamed to 'heading'")
     unit = doc.get("angle_unit", "rad")
     if unit not in ("rad", "deg"):
         raise SettingsError("angle_unit must be 'rad' or 'deg'")
     k = math.pi / 180.0 if unit == "deg" else 1.0
-    parts = {n: (_part(n, doc[n], k) if doc.get(n) is not None else None) for n in PART_NAMES}
-    if all(p is None for p in parts.values()):
-        raise SettingsError("at least one part must be non-null")
+
+    heading = _part("heading", "heading", doc["heading"], k) if doc.get("heading") else None
+    torso_docs: Any = doc.get("torso") or []
+    if not isinstance(torso_docs, list):
+        raise SettingsError("torso must be a list of segments")
+    segments: list[Json] = list(torso_docs)  # pyright: ignore[reportUnknownArgumentType]
+    torso = tuple(_part(f"torso.{i}", "torso", seg, k) for i, seg in enumerate(segments))
+    head = _part("head", "head", doc["head"], k) if doc.get("head") else None
+    eyes = _part("eyes", "eyes", doc["eyes"], k) if doc.get("eyes") else None
+    if not torso and head is None and eyes is None:
+        raise SettingsError("at least one joint (torso segment, head or eyes) must be present")
     return Settings(
         spec_version=version,
         name=str(doc.get("name", "")),
         description=str(doc.get("description", "")),
         max_substep=_num(doc, "max_substep", 1.0 / 120.0),
         velocity_filter_tau=_num(doc, "velocity_filter_tau", 0.02),
-        **parts,
+        heading=heading,
+        torso=torso,
+        head=head,
+        eyes=eyes,
     )
 
 
 def preset_path(name: str) -> Path:
     """Locate a shipped preset: inside the wheel, or the repo's presets/ in a checkout."""
-    packaged = resources.files("lookaround").joinpath("presets", f"{name}.json")
+    filename = f"{name}.yaml"
+    packaged = resources.files("lookaround").joinpath("presets", filename)
     if packaged.is_file():
         return Path(str(packaged))
     here = Path(__file__).resolve()
     for parent in here.parents:
-        candidate = parent / "presets" / f"{name}.json"
+        candidate = parent / "presets" / filename
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(f"no preset named {name!r}")

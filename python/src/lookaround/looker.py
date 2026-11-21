@@ -1,4 +1,7 @@
-"""The Looker: report the measured pose, update, read setpoints (spec sections 5 to 10)."""
+"""The Looker: set the root, feed back the measured joints, update, read setpoints.
+
+Behaviour is defined by docs/spec.md (sections 3 and 5 to 10).
+"""
 
 from __future__ import annotations
 
@@ -20,24 +23,33 @@ from ._math import (
     joint_matrix,
     mat_vec,
     norm,
+    rot_z,
     rpy_matrix,
     sign,
     softplus,
     sub,
     wrap,
 )
-from .settings import Axis, Hinge, Part, Settings, load_preset
+from .settings import Axis, Part, Settings, Share, load_preset
 
 Measurement = float | Sequence[float] | Mapping[str, float]
 
 MIN_TARGET_DISTANCE = 1e-6
+SUBSTEP_EPS = 1e-9
+HEADING_KEY = "heading.yaw"
 
 log = logging.getLogger("lookaround")
 
 
 def _deg(rad: float) -> float:
     return math.degrees(rad)
-SUBSTEP_EPS = 1e-9
+
+
+def _vec3(v: Sequence[float], what: str) -> Vec3:
+    out = (float(v[0]), float(v[1]), float(v[2]))
+    if not all(math.isfinite(c) for c in out):
+        raise ValueError(f"non-finite {what} {v!r}")
+    return out
 
 
 @dataclass(frozen=True)
@@ -52,7 +64,7 @@ class Diagnostics:
     gaze_error: float
     reachable: bool
     lead: dict[str, float]
-    base_state: str | None = None
+    heading_state: str | None = None
     vergence: float | None = None
 
 
@@ -62,6 +74,8 @@ class Output:
     setpoints: dict[str, Setpoint]
     diagnostics: Diagnostics
     pose: dict[str, float] = field(default_factory=dict[str, float])
+    root_position: Vec3 = (0.0, 0.0, 0.0)
+    root_heading: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         d = self.diagnostics
@@ -75,7 +89,7 @@ class Output:
                 "gaze_error": d.gaze_error,
                 "reachable": d.reachable,
                 "lead": dict(d.lead),
-                **({"base_state": d.base_state} if d.base_state is not None else {}),
+                **({"heading_state": d.heading_state} if d.heading_state is not None else {}),
                 **({"vergence": d.vergence} if d.vergence is not None else {}),
             },
         }
@@ -98,7 +112,7 @@ class _Channel:
         self.engaged = False
         self.timer = 0.0
         # measurements
-        self.reported: tuple[float, float | None] | None = None
+        self.fed: tuple[float, float | None] | None = None   # this tick's measurement
         self.last_ext: tuple[float, float] = (axis.rest, 0.0)
         self.prev_meas: float | None = None
         self.v_est = 0.0
@@ -106,7 +120,7 @@ class _Channel:
         self.v_meas = 0.0
         self.lead = 0.0
         self.governed = False      # governor currently holding the plan back
-        self.ever_reported = False
+        self.ever_fed = False
 
     def diff(self, a: float, b: float) -> float:
         return wrap(a - b) if self.axis.continuous else a - b
@@ -116,32 +130,35 @@ class _Channel:
 
 
 class Looker:
-    """A configured looker. Call report() (optional) then update() once per tick."""
+    """A configured looker. Each tick: set_root (if it moved), feedback (optional), update."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.t = 0.0
         self._first = True
+        self._root_position: Vec3 = (0.0, 0.0, 0.0)
+        self._root_heading = 0.0           # used when there is no heading part
         self._channels: dict[str, _Channel] = {}
         for part in settings.parts():
             for axis_name, axis in part.axes().items():
-                if part.name == "eyes" and part.binocular:
+                if part.kind == "eyes" and part.binocular:
                     for side in ("left", "right"):
                         key = f"eyes.{side}.{axis_name}"
                         self._channels[key] = _Channel(key, part, axis_name, axis)
                 else:
-                    key = f"{part.name}.{axis_name}"
+                    key = f"{part.key}.{axis_name}"
                     self._channels[key] = _Channel(key, part, axis_name, axis)
         self._reach = {
-            (p.name, ax): self._child_reach(p, ax) for p in settings.parts() for ax in p.axes()
+            (p.key, ax): self._child_reach(p, ax) for p in settings.joints() for ax in p.axes()
         }
-        self._base_state = "hold"
-        self._held = settings.base.yaw.rest if settings.base else 0.0
+        self._heading_state = "hold"
+        self._held = settings.heading.yaw.rest if settings.heading else 0.0
         self._dwell = 0.0
         self._was_reachable = True
         self._was_too_close = False
+        self._last_pose: dict[str, float] | None = None
         log.debug("looker %r: parts %s; driving %s; external %s", settings.name,
-                  [p.name for p in settings.parts()], self.outputs,
+                  [p.label for p in settings.parts()], self.outputs,
                   [k for k, c in self._channels.items() if not c.internal])
 
     # ---- construction helpers -------------------------------------------------------------
@@ -156,7 +173,7 @@ class Looker:
 
     @property
     def channels(self) -> list[str]:
-        """Every joint axis key, e.g. 'head.yaw' or 'eyes.left.pitch'."""
+        """Every joint axis key, e.g. 'torso.0.yaw', 'head.yaw' or 'eyes.left.pitch'."""
         return list(self._channels)
 
     @property
@@ -165,9 +182,9 @@ class Looker:
         return [k for k, c in self._channels.items() if c.internal]
 
     def _child_reach(self, part: Part, axis_name: str) -> tuple[float, float]:
-        parts = self.settings.parts()
+        joints = self.settings.joints()
         pos = neg = 0.0
-        for p in parts[parts.index(part) + 1:]:
+        for p in joints[joints.index(part) + 1:]:
             ax = p.axes().get(axis_name)
             if ax is None:
                 continue
@@ -179,33 +196,79 @@ class Looker:
 
     # ---- public API -----------------------------------------------------------------------
 
-    def report(self, measured: Mapping[str, Measurement]) -> None:
-        """Measured positions (and optionally velocities) for the next update only."""
+    def set_root(self, position: Sequence[float] | None = None,
+                 heading: float | None = None) -> None:
+        """Where the looker stands in the world (spec 6.1).
+
+        position persists until changed. heading: with no heading part, or an external one, it
+        persists; with an internal heading it is the measured heading for the next update only.
+        """
+        if position is not None:
+            self._root_position = _vec3(position, "root position")
+        if heading is None:
+            return
+        h = float(heading)
+        if not math.isfinite(h):
+            raise ValueError(f"non-finite root heading {heading!r}")
+        ch = self._channels.get(HEADING_KEY)
+        if ch is None:
+            self._root_heading = wrap(h)
+        else:
+            ch.fed = (h, None)
+            ch.ever_fed = True
+
+    def feedback(self, measured: Mapping[str, Measurement]) -> None:
+        """Measured joint positions (and optionally velocities) for the next update only."""
         for key, value in measured.items():
+            if key == HEADING_KEY:
+                raise KeyError("the heading is fed back through set_root(heading=...)")
             ch = self._channels.get(key)
             if ch is None:
-                raise KeyError(f"unknown joint {key!r}; expected one of {self.channels}")
+                valid = [k for k in self.channels if k != HEADING_KEY]
+                raise KeyError(f"unknown joint {key!r}; expected one of {valid}")
             if isinstance(value, Mapping):
                 pos = float(value["position"])
                 vel = value.get("velocity")
-                reported = (pos, None if vel is None else float(vel))
+                fed = (pos, None if vel is None else float(vel))
             elif isinstance(value, Sequence):
-                reported = (float(value[0]), float(value[1]) if len(value) > 1 else None)
+                fed = (float(value[0]), float(value[1]) if len(value) > 1 else None)
             else:
-                reported = (float(value), None)
-            if not all(math.isfinite(v) for v in reported if v is not None):
+                fed = (float(value), None)
+            if not all(math.isfinite(v) for v in fed if v is not None):
                 raise ValueError(f"non-finite measurement for {key!r}: {value!r}")
-            ch.reported = reported
-            ch.ever_reported = True
+            ch.fed = fed
+            ch.ever_fed = True
+
+    def reachable(self, target: Sequence[float]) -> bool:
+        """Could the looker look at this world point from where it stands, without turning?
+
+        Checks the target's direction from the eyes against the summed joint limits (spec 7).
+        Changes no state.
+        """
+        tgt = _vec3(target, "target")
+        pose = self._last_pose if self._last_pose is not None else self._current_pose()
+        frames = self._frames(pose)
+        d = self._root_frame(pose).to_local(sub(tgt, self._eye_point(frames)))
+        g_yaw, g_pitch = direction_angles(d)
+        joints = self.settings.joints()
+        yaw_ok = True
+        if all(p.yaw.limits is not None for p in joints):
+            lo = sum(p.yaw.limits[0] for p in joints if p.yaw.limits is not None)
+            hi = sum(p.yaw.limits[1] for p in joints if p.yaw.limits is not None)
+            yaw_ok = hi - lo >= TAU or lo <= g_yaw <= hi
+        pitched = [p.pitch for p in joints if p.pitch is not None and p.pitch.limits is not None]
+        pitch_ok = True
+        if pitched:
+            lo = sum(a.limits[0] for a in pitched if a.limits is not None)
+            hi = sum(a.limits[1] for a in pitched if a.limits is not None)
+            pitch_ok = lo <= g_pitch <= hi
+        return yaw_ok and pitch_ok
 
     def update(self, dt: float, target: Sequence[float] | None) -> Output:
+        """Advance by dt seconds towards a world-frame target (or None for idle)."""
         if not dt > 0:
             raise ValueError("dt must be > 0")
-        tgt: Vec3 | None = None
-        if target is not None:
-            tgt = (float(target[0]), float(target[1]), float(target[2]))
-            if not all(math.isfinite(c) for c in tgt):
-                raise ValueError(f"non-finite target {target!r}")
+        tgt: Vec3 | None = None if target is None else _vec3(target, "target")
 
         if self._first:
             self._initialise()
@@ -215,8 +278,7 @@ class Looker:
         pose = {k: self._predict(c, c.x_meas, c.v_meas) for k, c in self._channels.items()}
 
         if tgt is not None:
-            frames = self._frames(pose)
-            too_close = norm(sub(tgt, self._eye_point(frames))) < MIN_TARGET_DISTANCE
+            too_close = norm(sub(tgt, self._eye_point(self._frames(pose)))) < MIN_TARGET_DISTANCE
             if too_close != self._was_too_close:
                 if too_close:
                     log.debug("target is at the eye point; treating it as idle")
@@ -226,9 +288,10 @@ class Looker:
 
         reachable = True
         out_of_reach: tuple[str, float, tuple[float, float]] | None = None
-        for part in self.settings.parts():
+        parts = self.settings.parts()
+        for part in parts:
             raw, pre_clamp = self._raw_targets(part, pose, tgt, dt)
-            innermost = part is self.settings.parts()[-1]
+            innermost = part is parts[-1]
             for key, value in raw.items():
                 ch = self._channels[key]
                 if innermost and tgt is not None and ch.axis.limits is not None:
@@ -238,7 +301,7 @@ class Looker:
                         out_of_reach = out_of_reach or (key, pre_clamp[key], (lo, hi))
                 if ch.internal:
                     self._step(ch, value, dt)
-                    if ch.reported is None:
+                    if ch.fed is None:
                         pose[key] = self._predict(ch, ch.x, ch.v)
 
         if tgt is not None and reachable != self._was_reachable:
@@ -252,7 +315,8 @@ class Looker:
         out = self._output(pose, tgt, reachable)
         for ch in self._channels.values():
             ch.prev_meas = ch.x_meas
-            ch.reported = None
+            ch.fed = None
+        self._last_pose = dict(pose)
         self.t += dt
         return out
 
@@ -260,28 +324,30 @@ class Looker:
 
     def _initialise(self) -> None:
         for ch in self._channels.values():
-            if ch.reported is not None:
-                ch.x = ch.norm_angle(ch.reported[0])
+            if ch.fed is not None:
+                ch.x = ch.norm_angle(ch.fed[0])
             ch.v = ch.a = 0.0
             ch.target = ch.x
-            if not ch.internal and ch.reported is not None:
+            if not ch.internal and ch.fed is not None:
                 ch.last_ext = (ch.x, 0.0)
-        if self.settings.base is not None:
-            self._held = self._channels["base.yaw"].x
+        heading = self._channels.get(HEADING_KEY)
+        if heading is not None:
+            self._held = heading.x
         for key, ch in self._channels.items():
-            if not ch.internal and not ch.ever_reported:
-                log.warning("external joint %s was not reported before the first update; "
-                            "assuming its rest angle (%.1f deg) until it is", key,
+            if not ch.internal and not ch.ever_fed:
+                how = "set_root(heading=...)" if key == HEADING_KEY else "feedback()"
+                log.warning("external joint %s was not given through %s before the first "
+                            "update; assuming its rest angle (%.1f deg) until it is", key, how,
                             _deg(ch.axis.rest))
         self._first = False
 
     def _resolve_measurements(self, dt: float) -> None:
         tau = self.settings.velocity_filter_tau
         for ch in self._channels.values():
-            if ch.reported is not None:
-                x = ch.norm_angle(ch.reported[0])
-                if ch.reported[1] is not None:
-                    v = ch.reported[1]
+            if ch.fed is not None:
+                x = ch.norm_angle(ch.fed[0])
+                if ch.fed[1] is not None:
+                    v = ch.fed[1]
                 else:
                     if ch.prev_meas is None:
                         ch.v_est = 0.0
@@ -301,28 +367,37 @@ class Looker:
         lat = ch.part.actuator_latency
         return ch.norm_angle(x + v * lat) if lat else x
 
+    def _current_pose(self) -> dict[str, float]:
+        """Pose before any update: references for internal axes, last values for external."""
+        return {k: (c.x if c.internal and c.fed is None else
+                    (c.fed[0] if c.fed is not None else c.last_ext[0]))
+                for k, c in self._channels.items()}
+
     # ---- kinematics (spec 3) ------------------------------------------------------------------
 
+    def _root_frame(self, pose: Mapping[str, float]) -> Frame:
+        heading = pose.get(HEADING_KEY, self._root_heading)
+        return Frame(rot_z(heading), self._root_position)
+
     def _frames(self, pose: Mapping[str, float]) -> dict[str, tuple[Frame, Frame]]:
-        """Zero-angle frame and rotated frame of each present part, in M."""
+        """Zero-angle frame and rotated frame of each joint, in the world frame."""
         frames: dict[str, tuple[Frame, Frame]] = {}
-        f = Frame()
-        for part in self.settings.parts():
+        f = self._root_frame(pose)
+        for part in self.settings.joints():
             f0 = f.then(rpy_matrix(part.offset_rpy), part.offset_xyz)
-            if part.name == "eyes":
+            if part.kind == "eyes":
                 frames["eyes"] = (f0, f0)
                 break
-            yaw = pose[f"{part.name}.yaw"]
-            pitch = pose.get(f"{part.name}.pitch", 0.0)
+            yaw = pose[f"{part.key}.yaw"]
+            pitch = pose.get(f"{part.key}.pitch", 0.0)
             f = f0.then(joint_matrix(yaw, pitch))
-            frames[part.name] = (f0, f)
+            frames[part.key] = (f0, f)
         return frames
 
     def _eye_point(self, frames: Mapping[str, tuple[Frame, Frame]]) -> Vec3:
         if "eyes" in frames:
             return frames["eyes"][0].p
-        last = self.settings.parts()[-1].name
-        return frames[last][1].p
+        return frames[self.settings.joints()[-1].key][1].p
 
     def _eye_centres(self, eye0: Frame, part: Part) -> dict[str, Vec3]:
         if not part.binocular:
@@ -337,15 +412,15 @@ class Looker:
 
     def _split(self, part: Part, axis_name: str, axis: Axis, g: float) -> float:
         e = wrap(g - axis.rest) if axis_name == "yaw" else g - axis.rest
-        h: Hinge = axis.split.pos if e >= 0 else axis.split.neg
-        reach = self._reach[(part.name, axis_name)][0 if e >= 0 else 1]
+        s: Share = axis.split.pos if e >= 0 else axis.split.neg
+        reach = self._reach[(part.key, axis_name)][0 if e >= 0 else 1]
         x = abs(e)
-        if h.soft == 0:
-            share = h.share * max(0.0, x - h.knee)
+        if s.softness == 0:
+            taken = s.share * max(0.0, x - s.dead_zone)
         else:
-            share = h.share * h.soft * (softplus((x - h.knee) / h.soft)
-                                        - softplus(-h.knee / h.soft))
-        u = max(share, x - reach)
+            taken = s.share * s.softness * (softplus((x - s.dead_zone) / s.softness)
+                                            - softplus(-s.dead_zone / s.softness))
+        u = max(taken, x - reach)
         return axis.rest + sign(e) * u
 
     def _limit(self, ch: _Channel, raw: float) -> float:
@@ -367,9 +442,11 @@ class Looker:
         keys = [k for k, c in self._channels.items() if c.part is part]
         pre: dict[str, float] = {}
         frames = self._frames(pose)
-        f0 = frames[part.name][0]
 
-        if part.name == "eyes":
+        if part.kind == "heading":
+            pre[HEADING_KEY] = self._heading_decision(part, pose, frames, tgt, dt)
+        elif part.kind == "eyes":
+            f0 = frames["eyes"][0]
             centres = self._eye_centres(f0, part)
             for key in keys:
                 ch = self._channels[key]
@@ -379,9 +456,8 @@ class Looker:
                 side = key.split(".")[1] if part.binocular else ""
                 yaw, pitch = direction_angles(f0.to_local(sub(tgt, centres[side])))
                 pre[key] = yaw if ch.axis_name == "yaw" else pitch
-        elif part.name == "base":
-            pre["base.yaw"] = self._base_decision(part, pose, f0, frames, tgt, dt)
         else:
+            f0 = frames[part.key][0]
             gaze: dict[str, float] = {}
             if tgt is not None:
                 d = f0.to_local(sub(tgt, self._eye_point(frames)))
@@ -396,33 +472,34 @@ class Looker:
         raw = {k: self._limit(self._channels[k], v) for k, v in pre.items()}
         return raw, pre
 
-    def _base_decision(self, part: Part, pose: Mapping[str, float], f0: Frame,
-                       frames: Mapping[str, tuple[Frame, Frame]], tgt: Vec3 | None,
-                       dt: float) -> float:
+    def _heading_decision(self, part: Part, pose: Mapping[str, float],
+                          frames: Mapping[str, tuple[Frame, Frame]], tgt: Vec3 | None,
+                          dt: float) -> float:
         if part.external:
-            return pose["base.yaw"]
+            return pose[HEADING_KEY]
         dec = part.decision
         if tgt is None:
-            if self._base_state == "turn":
-                log.debug("base: turn -> hold (no target)")
-            self._base_state = "hold"
+            if self._heading_state == "turn":
+                log.debug("heading: turn -> hold (no target)")
+            self._heading_state = "hold"
             self._dwell = 0.0
             return self._held
-        a, _ = direction_angles(f0.to_local(sub(tgt, self._eye_point(frames))))
-        if self._base_state == "hold":
+        a, _ = direction_angles(sub(tgt, self._eye_point(frames)))   # world bearing
+        if self._heading_state == "hold":
             off = abs(wrap(a - self._held))
             self._dwell = self._dwell + dt if off > dec.dwell_angle else 0.0
             if off > dec.turn_now or self._dwell >= dec.dwell_time:
-                self._base_state = "turn"
+                self._heading_state = "turn"
                 why = (f"beyond turn_now {_deg(dec.turn_now):.0f} deg" if off > dec.turn_now
                        else f"held past {_deg(dec.dwell_angle):.0f} deg for {dec.dwell_time:g} s")
-                log.debug("base: hold -> turn, target %.1f deg off heading (%s)", _deg(off), why)
-        if self._base_state == "turn":
-            if abs(wrap(a - pose["base.yaw"])) <= dec.settle_angle:
-                self._base_state = "hold"
+                log.debug("heading: hold -> turn, target %.1f deg off heading (%s)",
+                          _deg(off), why)
+        if self._heading_state == "turn":
+            if abs(wrap(a - pose[HEADING_KEY])) <= dec.settle_angle:
+                self._heading_state = "hold"
                 self._held = a
                 self._dwell = 0.0
-                log.debug("base: turn -> hold, facing %.1f deg", _deg(a))
+                log.debug("heading: turn -> hold, facing %.1f deg", _deg(a))
             return a
         return self._held
 
@@ -502,9 +579,9 @@ class Looker:
             k: Setpoint(c.x, c.v, c.a) for k, c in self._channels.items() if c.internal
         }
         frames = self._frames(pose)
-        last = self.settings.parts()[-1]
+        last = self.settings.joints()[-1]
         vergence = None
-        if last.name == "eyes":
+        if last.kind == "eyes":
             eye0 = frames["eyes"][0]
             dirs: list[Vec3] = []
             sides = ("left", "right") if last.binocular else ("",)
@@ -516,18 +593,22 @@ class Looker:
             if len(dirs) == 2:
                 vergence = angle_between(dirs[0], dirs[1])
         else:
-            gaze = frames[last.name][1].facing()
+            gaze = frames[last.key][1].facing()
         err = 0.0
         if tgt is not None:
             err = angle_between(gaze, sub(tgt, self._eye_point(frames)))
-        base_state = None
-        if self.settings.base is not None and not self.settings.base.external:
-            base_state = self._base_state
+        heading_state = None
+        if self.settings.heading is not None and not self.settings.heading.external:
+            heading_state = self._heading_state
         diag = Diagnostics(
             gaze_error=err,
             reachable=reachable,
             lead={k: c.lead for k, c in self._channels.items() if c.internal},
-            base_state=base_state,
+            heading_state=heading_state,
             vergence=vergence,
         )
-        return Output(t=self.t, setpoints=setpoints, diagnostics=diag, pose=dict(pose))
+        return Output(
+            t=self.t, setpoints=setpoints, diagnostics=diag, pose=dict(pose),
+            root_position=self._root_position,
+            root_heading=pose.get(HEADING_KEY, self._root_heading),
+        )

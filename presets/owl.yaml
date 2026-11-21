@@ -1,0 +1,28 @@
+# Perched owl. Owls' eyes are almost fixed in the skull, so there are no eyes here and the head
+# does all the work (with no eyes, the head's split always covers the full gaze).
+# Dynamics hand-picked.
+
+spec_version: "0.2.0"
+name: owl
+description: Perched owl. No eyes, no torso, no heading; the head covers about 270 deg of yaw.
+angle_unit: deg
+
+heading: null
+torso: []
+
+head:
+  offset: { xyz: [0, 0, 0.3] }
+  yaw:
+    limits: [-135, 135]                # about 270 deg total
+    split:
+      pos: { share: 1.0 }
+      neg: { share: 1.0 }
+    dynamics: { omega: 10.0, v_max: 300, latency: 0.05, deadband: 1 }
+  pitch:
+    limits: [-80, 80]
+    split:
+      pos: { share: 1.0 }
+      neg: { share: 1.0 }
+    dynamics: { omega: 10.0, v_max: 300, latency: 0.05, deadband: 1 }
+
+eyes: null
